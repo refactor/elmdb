@@ -1,4 +1,5 @@
 #include <errno.h>
+#include <string.h>
 
 #include "erl_nif.h"
 #include <erl_driver.h>
@@ -9,8 +10,8 @@
 
 #define CHECK(expr, label)                      \
     if (MDB_SUCCESS != (ret = (expr))) {                \
-    ERR_LOG("CHECK(\"%s\") failed \"%s\" at %s:%d in %s()\n",   \
-            #expr, mdb_strerror(ret), __FILE__, __LINE__, __func__);\
+    ERR_LOG("CHECK(\"%s\") failed \"%s(%d)\" at %s:%d in %s()\n",   \
+            #expr, mdb_strerror(ret),ret, __FILE__, __LINE__, __func__);\
     err = __strerror_term(env,ret); \
     goto label;                         \
     }
@@ -38,7 +39,7 @@ typedef struct lmdb_dbi_s {
 } lmdb_dbi_t;
 
 static void lmdb_dtor(ErlNifEnv* __attribute__((unused)) env, void* obj) {
-    INFO_LOG("destroy...... obj -> %p", obj);
+    INFO_LOG("destroy...... lmdb.env -> %p", obj);
     lmdb_env_t *lmdb = (lmdb_env_t*)obj;
     if (lmdb) {
         if (lmdb->env) {
@@ -49,6 +50,7 @@ static void lmdb_dtor(ErlNifEnv* __attribute__((unused)) env, void* obj) {
 }
 
 static void lmdb_dbi_dtor(ErlNifEnv* env, void* obj) {
+    INFO_LOG("destroy...... lmdb.dbi -> %p", obj);
     __UNUSED(env);
     lmdb_dbi_t *f = (lmdb_dbi_t*)obj;
     if (f) {
@@ -180,6 +182,7 @@ static ERL_NIF_TERM elmdb_open(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv
         .lmdb_env = handle,
         .dbi = dbi
     };
+    strncpy(family->name, dbname, strlen(dbname) + 1);
     ERL_NIF_TERM res = enif_make_resource(env, family);
     enif_release_resource(family);
     enif_keep_resource(handle);
@@ -192,8 +195,74 @@ err2:
     return err;
 }
 
-static ERL_NIF_TERM hello(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
-{
+static ERL_NIF_TERM elmdb_put(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
+    lmdb_dbi_t *dbihandle = NULL;
+    if (!enif_get_resource(env, argv[0], lmdbDbiResType, (void**)&dbihandle)) {
+        return enif_make_badarg(env);
+    }
+    ErlNifBinary keyTerm;
+    ErlNifBinary valTerm;
+    if (!enif_inspect_binary(env, argv[1], &keyTerm) ||
+        !enif_inspect_binary(env, argv[2], &valTerm)) {
+        return enif_make_badarg(env);
+    }
+
+    int ret;
+    ERL_NIF_TERM err;
+
+    MDB_txn *txn = NULL;
+    CHECK(mdb_txn_begin(dbihandle->lmdb_env->env, NULL, 0, &txn), err1);
+
+    MDB_val key, val;
+    key.mv_size = keyTerm.size;
+    key.mv_data = keyTerm.data;
+    val.mv_size = valTerm.size;
+    val.mv_data = valTerm.data;
+
+    mdb_put(txn, dbihandle->dbi, &key, &val, MDB_NOOVERWRITE);
+    CHECK(mdb_txn_commit(txn), err2);
+    return argv[0];
+
+err1:
+    mdb_txn_abort(txn);
+err2:
+    return err;
+}
+
+static ERL_NIF_TERM elmdb_get(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
+    lmdb_dbi_t *dbihandle = NULL;
+    if (!enif_get_resource(env, argv[0], lmdbDbiResType, (void**)&dbihandle)) {
+        return enif_make_badarg(env);
+    }
+
+    ErlNifBinary keyTerm;
+    if (!enif_inspect_binary(env, argv[1], &keyTerm)) {
+        return enif_make_badarg(env);
+    }
+
+    int ret;
+    ERL_NIF_TERM err;
+
+    MDB_txn *txn = NULL;
+    CHECK(mdb_txn_begin(dbihandle->lmdb_env->env, NULL, MDB_RDONLY, &txn), err1);
+    
+    MDB_val key, val;
+    key.mv_size = keyTerm.size;
+    key.mv_data = keyTerm.data;
+    CHECK( mdb_get(txn, dbihandle->dbi, &key, &val), err1);
+    mdb_txn_abort(txn);
+
+    ERL_NIF_TERM res;
+    unsigned char* bin = enif_make_new_binary(env, val.mv_size, &res);
+    memcpy(bin, val.mv_data, val.mv_size);
+    return res;
+
+err1:
+    mdb_txn_abort(txn);
+    return err;
+}
+
+static ERL_NIF_TERM hello(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
     if (enif_is_atom(env, argv[0])) {
         return enif_make_tuple2(env,
             enif_make_atom(env, "hello"),
@@ -208,6 +277,8 @@ static ERL_NIF_TERM hello(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 static ErlNifFunc nif_funcs[] = {
     {"init", 1, elmdb_init},
     {"open", 2, elmdb_open},
+    {"put",  3, elmdb_put},
+    {"get",  2, elmdb_get},
     {"hello", 1, hello}
 };
 

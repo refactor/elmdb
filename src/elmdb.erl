@@ -3,6 +3,8 @@
 -export([hello/1]).
 -export([init/1]).
 -export([open/2]).
+-export([put/3]).
+-export([get/2]).
 
 -on_load(on_load/0).
 on_load() ->
@@ -22,4 +24,10 @@ init(_) ->
 	erlang:nif_error({not_loaded, ?MODULE}).
 
 open(_, _) ->
+	erlang:nif_error({not_loaded, ?MODULE}).
+
+put(_, _, _) ->
+	erlang:nif_error({not_loaded, ?MODULE}).
+
+get(_, _) ->
 	erlang:nif_error({not_loaded, ?MODULE}).
