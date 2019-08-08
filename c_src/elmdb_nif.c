@@ -132,26 +132,28 @@ static ERL_NIF_TERM elmdb_init(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv
     int ret = 0;
     ERL_NIF_TERM err;
 
-    lmdb_env_t *handle = enif_alloc_resource(lmdbEnvResType, sizeof(*handle));
-    if (handle == NULL) FAIL_ERR(ENOMEM, err3);
+    MDB_env *ctx;
+    CHECK(mdb_env_create(&ctx), err2);
+    CHECK(mdb_env_set_maxdbs(ctx, 256), err2);
+    CHECK(mdb_env_set_mapsize(ctx, 10485760), err2);
 
-    CHECK(mdb_env_create(&(handle->env)), err2);
-    CHECK(mdb_env_set_maxdbs(handle->env, 256), err2);
-    CHECK(mdb_env_set_mapsize(handle->env, 10485760), err2);
-
-    unsigned int envFlags = MDB_FIXEDMAP; 
-    CHECK(mdb_env_open(handle->env, dirname, envFlags, 0664), err2);
+    unsigned int envFlags = 0; 
+    CHECK(mdb_env_open(ctx, dirname, envFlags, 0664), err2);
 
     // Each transaction belongs to one thread.
     // The MDB_NOTLS flag changes this for read-only transactions
 //    CHECK(mdb_env_set_flags(handle->env, MDB_NOTLS, 1), err2);
 
+    lmdb_env_t *handle = enif_alloc_resource(lmdbEnvResType, sizeof(*handle));
+    if (handle == NULL) FAIL_ERR(ENOMEM, err3);
+
+    handle->env = ctx;
     ERL_NIF_TERM term = enif_make_resource(env, handle);
     enif_release_resource(handle);
     return term;
 
 err2:
-    mdb_env_close(handle->env);
+    mdb_env_close(ctx);
 err3:
     return err;
 }
