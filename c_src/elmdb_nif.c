@@ -123,12 +123,12 @@ static ERL_NIF_TERM elmdb_init(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv
     CHECK(mdb_env_set_maxdbs(ctx, 256), err2);
     CHECK(mdb_env_set_mapsize(ctx, 10485760), err2);
 
-    unsigned int envFlags = 0; 
+    unsigned int envFlags = 0 | MDB_NOTLS; 
     CHECK(mdb_env_open(ctx, dirname, envFlags, 0664), err2);
 
     // Each transaction belongs to one thread.
     // The MDB_NOTLS flag changes this for read-only transactions
-//    CHECK(mdb_env_set_flags(handle->env, MDB_NOTLS, 1), err2);
+//    CHECK(mdb_env_set_flags(ctx, MDB_NOTLS, 1), err2);
 
     MDB_txn *txn = NULL;
     CHECK(mdb_txn_begin(ctx, NULL, MDB_RDONLY, &txn), err2);
