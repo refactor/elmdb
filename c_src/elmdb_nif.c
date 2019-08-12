@@ -236,7 +236,7 @@ static ERL_NIF_TERM elmdb_put(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
     val.mv_size = valTerm.size;
     val.mv_data = valTerm.data;
 
-    mdb_put(txn, dbi, &key, &val, MDB_NOOVERWRITE);
+    CHECK(mdb_put(txn, dbi, &key, &val, 0), err1);
     CHECK(mdb_txn_commit(txn), err2);
     return argv[0];
 
