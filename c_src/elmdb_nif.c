@@ -298,6 +298,22 @@ err1:
     return err;
 }
 
+static ERL_NIF_TERM elmdb_list_layers(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
+    lmdb_env_t *handle = NULL;
+    if (!enif_get_resource(env, argv[0], lmdbEnvResType, (void**)&handle)) {
+        return enif_make_badarg(env);
+    }
+
+    ERL_NIF_TERM list = enif_make_list(env, 0);
+    const char* dbname = NULL;
+    MDB_dbi dbi;
+    kh_foreach(handle->layers, dbname, dbi, {
+        ERL_NIF_TERM hd = enif_make_string(env, dbname, ERL_NIF_LATIN1);    
+        list = enif_make_list_cell(env, hd, list);    
+    });
+    return list;
+}
+
 static ERL_NIF_TERM hello(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
     lmdb_env_t *handle = NULL;
     if (!enif_get_resource(env, argv[0], lmdbEnvResType, (void**)&handle)) {
@@ -329,6 +345,7 @@ static ERL_NIF_TERM hello(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
             mdb_cursor_close(cursor);
             mdb_dbi_close(handle->env, dbi);
         }
+        else WARN_LOG("a hole in hashmap");
     }
     mdb_txn_abort(txn);
 
@@ -346,6 +363,7 @@ static ErlNifFunc nif_funcs[] = {
     {"init", 1, elmdb_init},
     {"put",  3, elmdb_put},
     {"get",  2, elmdb_get},
+    {"list_layers", 1, elmdb_list_layers},
     {"hello", 1, hello}
 };
 
