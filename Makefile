@@ -3,5 +3,7 @@ PROJECT_DESCRIPTION = New project
 PROJECT_VERSION = 0.1.0
 
 #CFLAGS +=-DMYDEBUG
+CFLAGS += -pthread
+CFLAGS += -DMDB_DEBUG
 
 include erlang.mk

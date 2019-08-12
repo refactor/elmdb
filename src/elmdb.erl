@@ -2,7 +2,6 @@
 
 -export([hello/1]).
 -export([init/1]).
--export([open/2]).
 -export([put/3]).
 -export([get/2]).
 
@@ -23,11 +22,8 @@ hello(_) ->
 init(_) ->
 	erlang:nif_error({not_loaded, ?MODULE}).
 
-open(_, _) ->
+put(_LmdbRes, {_Layer,_Key}, _Value) ->
 	erlang:nif_error({not_loaded, ?MODULE}).
 
-put(_, _, _) ->
-	erlang:nif_error({not_loaded, ?MODULE}).
-
-get(_, _) ->
+get(_LmdbRes, {_Layer,_Key}) ->
 	erlang:nif_error({not_loaded, ?MODULE}).
