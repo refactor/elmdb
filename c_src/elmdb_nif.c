@@ -32,19 +32,33 @@ typedef struct lmdb_env_s {
     khash_t(layer) *layers;
 } lmdb_env_t;
 
-static void lmdb_dtor(ErlNifEnv* __attribute__((unused)) env, void* obj) {
-    INFO_LOG("destroy...... lmdb.env -> %p", obj);
-    lmdb_env_t *lmdb = (lmdb_env_t*)obj;
+static void lmdb_close(lmdb_env_t* lmdb) {
     if (lmdb) {
-        if (lmdb->env) {
-            mdb_env_close(lmdb->env);
-            lmdb->env = NULL;
-        }
+        DBG("close lmdb...");
         if (lmdb->layers) {
+            DBG("\tfree dbnames & destroy kh");
+            const char* dbname = NULL;
+            MDB_dbi dbi;
+            kh_foreach(lmdb->layers, dbname, dbi, {
+                DBG("\tfree dbi: %s", dbname);    
+                //mdb_dbi_close(lmdb->env, dbi);    
+                free((void*)dbname);
+            });
             kh_destroy(layer, lmdb->layers);
             lmdb->layers = NULL;
         }
+        if (lmdb->env) {
+            DBG("\tclose env!");
+            mdb_env_close(lmdb->env);
+            lmdb->env = NULL;
+        }
     }
+}
+
+static void lmdb_dtor(ErlNifEnv* __attribute__((unused)) env, void* obj) {
+    INFO_LOG("destroy...... lmdb.env -> %p", obj);
+    lmdb_env_t *lmdb = (lmdb_env_t*)obj;
+    lmdb_close(lmdb);
 }
 
 static int loads = 0;
@@ -130,45 +144,46 @@ static ERL_NIF_TERM elmdb_init(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv
     // The MDB_NOTLS flag changes this for read-only transactions
 //    CHECK(mdb_env_set_flags(ctx, MDB_NOTLS, 1), err2);
 
-    MDB_txn *txn = NULL;
-    CHECK(mdb_txn_begin(ctx, NULL, MDB_RDONLY, &txn), err2);
+    MDB_txn *rotxn = NULL;  // READONLY txn
+    CHECK(mdb_txn_begin(ctx, NULL, MDB_RDONLY, &rotxn), err2);
     MDB_dbi dbi;
-    CHECK(mdb_dbi_open(txn, NULL, 0, &dbi), err1);
+    CHECK(mdb_dbi_open(rotxn, NULL, 0, &dbi), err2);
     MDB_cursor *cursor;
-    CHECK(mdb_cursor_open(txn, dbi, &cursor), err2);
-
+    CHECK(mdb_cursor_open(rotxn, dbi, &cursor), err2);
     khash_t(layer) *layers = kh_init(layer);
-    MDB_val key, val;
+    MDB_val key;
     while (mdb_cursor_get(cursor, &key, NULL, MDB_NEXT_NODUP) == 0) {
         if (memchr(key.mv_data, '\0', key.mv_size))
             continue;
-        char *str = malloc(key.mv_size + 1);  
-        memcpy(str, key.mv_data, key.mv_size);
-        DBG("key: sz=%d, len=%d", key.mv_size, strlen(key.mv_data));
-        str[key.mv_size] = '\0';
-        MDB_dbi db2;
-        if (mdb_dbi_open(txn, str, 0, &db2) == MDB_SUCCESS) {
-            INFO_LOG("dbi --> %s => %d", str, db2);
+
+        DBG("key: -> %p, sz=%d", key.mv_data, key.mv_size);
+        DBG("key: len=%u", strlen(key.mv_data));
+        char *dbname = calloc(key.mv_size + 1, 1);  
+        memcpy(dbname, key.mv_data, key.mv_size);
+        DBG("key: sz=%d, strlen=%d", key.mv_size, strlen(key.mv_data));
+        MDB_dbi dbl;
+        if (mdb_dbi_open(rotxn, dbname, 0, &dbl) == MDB_SUCCESS) {
+            DBG("layer --> name=%s, dbi=%d", dbname, dbl);
             int absent = 0;
-            khiter_t k = kh_put(layer, layers, str, &absent);
+            khiter_t k = kh_put(layer, layers, dbname, &absent);
             if (absent) {
-                kh_key(layers, k) = str;
+                kh_key(layers, k) = dbname;
             }
             else {
-                free(str);
+                free(dbname);
             }
-            kh_value(layers, k) = 0; // TODO: some value for each layer
-            mdb_dbi_close(ctx, db2);
+            kh_value(layers, k) = dbl; // DO NOT use it, cannot reuse
+            mdb_dbi_close(ctx, dbl);
         }
         else {
-            WARN_LOG("not a dbi: %s", str);
+            WARN_LOG("not a dbi: %s", dbname);
         }
     }
     mdb_cursor_close(cursor);
-    mdb_txn_abort(txn);
 
     lmdb_env_t *handle = enif_alloc_resource(lmdbEnvResType, sizeof(*handle));
     if (handle == NULL) FAIL_ERR(ENOMEM, err1);
+    mdb_txn_commit(rotxn);
 
     handle->env = ctx;
     handle->layers = layers;
@@ -177,6 +192,7 @@ static ERL_NIF_TERM elmdb_init(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv
     return term;
 
 err1:
+    mdb_txn_abort(rotxn);
     kh_destroy(layer, layers);
 err2:
     mdb_env_close(ctx);
@@ -184,12 +200,23 @@ err3:
     return err;
 }
 
-static ERL_NIF_TERM elmdb_put(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
+static ERL_NIF_TERM elmdb_close(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
     lmdb_env_t *handle = NULL;
     if (!enif_get_resource(env, argv[0], lmdbEnvResType, (void**)&handle)) {
         return enif_make_badarg(env);
     }
     
+    lmdb_close(handle);
+    return ATOM_OK;
+}
+
+static ERL_NIF_TERM elmdb_put(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
+    lmdb_env_t *handle = NULL;
+    if (!enif_get_resource(env, argv[0], lmdbEnvResType, (void**)&handle)) {
+        return enif_make_badarg(env);
+    }
+    if (handle->env == NULL) return enif_raise_exception(env, enif_make_string(env, "closed lmdb", ERL_NIF_LATIN1));
+
     const ERL_NIF_TERM* laykey = NULL;
     int arity = 0;
     if (!enif_get_tuple(env, argv[1], &arity, &laykey)) {
@@ -210,12 +237,11 @@ static ERL_NIF_TERM elmdb_put(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
     CHECK(mdb_txn_begin(handle->env, NULL, 0, &txn), err1);
 
     MDB_dbi dbi;
-    char dbname[128] = {};
+    char dbname[128] = {0};
     memcpy(dbname, layBin.data, layBin.size);
-    dbname[layBin.size] = '\0';
     if (kh_get(layer,handle->layers, dbname) == kh_end(handle->layers)) {
-        DBG("the layer(%s) not found, create one", dbname);
         CHECK(mdb_dbi_open(txn, dbname, MDB_CREATE, &dbi), err1);
+        DBG("the layer(%s) not found, create one(dbi=%d)", dbname, dbi);
         int absent = 0;
         khiter_t k = kh_put(layer, handle->layers, dbname, &absent);
         if (absent) kh_key(handle->layers, k) = strndup(dbname, sizeof(dbname));
@@ -251,6 +277,7 @@ static ERL_NIF_TERM elmdb_get(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
     if (!enif_get_resource(env, argv[0], lmdbEnvResType, (void**)&handle)) {
         return enif_make_badarg(env);
     }
+    if (handle->env == NULL) return enif_raise_exception(env, enif_make_string(env, "closed lmdb", ERL_NIF_LATIN1));
 
     const ERL_NIF_TERM* laykey = NULL;
     int arity = 0;
@@ -281,6 +308,7 @@ static ERL_NIF_TERM elmdb_get(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
     CHECK(mdb_txn_begin(handle->env, NULL, MDB_RDONLY, &txn), err1);
     MDB_dbi dbi;
     CHECK(mdb_dbi_open(txn, dbname, 0, &dbi), err1);
+    DBG("open dbi: %d", dbi);
     
     MDB_val key, val;
     key.mv_size = keyBin.size;
@@ -303,6 +331,7 @@ static ERL_NIF_TERM elmdb_list_layers(ErlNifEnv* env, int argc, const ERL_NIF_TE
     if (!enif_get_resource(env, argv[0], lmdbEnvResType, (void**)&handle)) {
         return enif_make_badarg(env);
     }
+    if (handle->env == NULL) return enif_raise_exception(env, enif_make_string(env, "closed lmdb", ERL_NIF_LATIN1));
 
     ERL_NIF_TERM list = enif_make_list(env, 0);
     const char* dbname = NULL;
@@ -319,6 +348,7 @@ static ERL_NIF_TERM hello(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
     if (!enif_get_resource(env, argv[0], lmdbEnvResType, (void**)&handle)) {
         return enif_make_badarg(env);
     }
+    if (handle->env == NULL) return enif_raise_exception(env, enif_make_string(env, "closed lmdb", ERL_NIF_LATIN1));
 
     int ret;
     ERL_NIF_TERM err;
@@ -360,11 +390,12 @@ err2:
 }
 
 static ErlNifFunc nif_funcs[] = {
-    {"init", 1, elmdb_init},
-    {"put",  3, elmdb_put},
-    {"get",  2, elmdb_get},
+    {"init",        1, elmdb_init, ERL_NIF_DIRTY_JOB_IO_BOUND},
+    {"close",       1, elmdb_close, ERL_NIF_DIRTY_JOB_IO_BOUND},
+    {"put",         3, elmdb_put},
+    {"get",         2, elmdb_get},
     {"list_layers", 1, elmdb_list_layers},
-    {"hello", 1, hello}
+    {"hello",       1, hello}
 };
 
 ERL_NIF_INIT(elmdb, nif_funcs, load, NULL, upgrade, unload)
