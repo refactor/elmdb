@@ -4,6 +4,7 @@
 -export([to_map/2]).
 -export([init/1]).
 -export([close/1]).
+-export([drop/2]).
 -export([put/3]).
 -export([get/2]).
 -export([list_layers/1]).
@@ -22,7 +23,7 @@ on_load() ->
 hello(_) ->
 	erlang:nif_error({not_loaded, ?MODULE}).
 
-to_map(_Reference, _Layer) ->
+to_map(_LmdbRes, _Layer) ->
 	erlang:nif_error({not_loaded, ?MODULE}).
 
 -spec init(filelib:dirname()) -> reference().
@@ -31,6 +32,10 @@ init(_) ->
 
 -spec close(reference()) -> ok | {error, any()}.
 close(_) ->
+	erlang:nif_error({not_loaded, ?MODULE}).
+
+-spec drop(reference(), string()) -> ok | {error, any()}.
+drop(_LmdbRes, _Layer) ->
 	erlang:nif_error({not_loaded, ?MODULE}).
 
 put(_LmdbRes, {_Layer,_Key}, _Value) ->

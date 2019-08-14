@@ -219,6 +219,52 @@ static ERL_NIF_TERM elmdb_close(ErlNifEnv* env, int argc, const ERL_NIF_TERM arg
     return ATOM_OK;
 }
 
+static ERL_NIF_TERM elmdb_drop(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
+    lmdb_env_t *handle = NULL;
+    if (!enif_get_resource(env, argv[0], lmdbEnvResType, (void**)&handle)) {
+        return enif_make_badarg(env);
+    }
+    if (handle->env == NULL) return enif_raise_exception(env, enif_make_string(env, "closed lmdb", ERL_NIF_LATIN1));
+    
+    ErlNifBinary layBin;
+    if (!enif_inspect_iolist_as_binary(env, argv[1], &layBin)) {
+        return enif_make_badarg(env);
+    }
+    char dbname[128] = {0};
+    memcpy(dbname, layBin.data, layBin.size);
+
+    enif_rwlock_rlock(handle->layers_rwlock);
+    bool exist = (kh_get(layer,handle->layers, dbname) != kh_end(handle->layers));
+    enif_rwlock_runlock(handle->layers_rwlock);
+    if (!exist) {
+        ERR_LOG("no layer(sub-db) created for %s", dbname);
+        return enif_raise_exception(env, 
+                enif_make_tuple2(env, ATOM_DBI_NOT_FOUND, argv[1]));
+    }
+
+    int ret;
+    ERL_NIF_TERM err;
+
+    MDB_txn *txn = NULL;
+    CHECK(mdb_txn_begin(handle->env, NULL, 0, &txn), err2);
+    MDB_dbi dbi;
+    CHECK(mdb_dbi_open(txn, dbname, 0, &dbi), err1);
+    CHECK(mdb_drop(txn, dbi, 1), err1);
+    CHECK(mdb_txn_commit(txn), err1);
+
+    enif_rwlock_rwlock(handle->layers_rwlock);
+    khiter_t k = kh_get(layer,handle->layers, dbname);
+    kh_del(layer, handle->layers, k);
+    enif_rwlock_rwunlock(handle->layers_rwlock);
+
+    return argv[0];
+
+err1:
+    mdb_txn_abort(txn);
+err2:
+    return enif_raise_exception(env, err);
+}
+
 static ERL_NIF_TERM elmdb_put(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
     lmdb_env_t *handle = NULL;
     if (!enif_get_resource(env, argv[0], lmdbEnvResType, (void**)&handle)) {
@@ -307,9 +353,9 @@ static ERL_NIF_TERM elmdb_get(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
     char dbname[128] = {0};
     memcpy(dbname, layBin.data, layBin.size);
     enif_rwlock_rlock(handle->layers_rwlock);
-    bool created = (kh_get(layer,handle->layers, dbname) != kh_end(handle->layers));
+    bool exist = (kh_get(layer,handle->layers, dbname) != kh_end(handle->layers));
     enif_rwlock_runlock(handle->layers_rwlock);
-    if (!created) {
+    if (!exist) {
         ERR_LOG("no layer created for %s", dbname);
         return enif_raise_exception(env, 
                 enif_make_tuple2(env, ATOM_DBI_NOT_FOUND, laykey[0]));
@@ -374,8 +420,13 @@ static ERL_NIF_TERM elmdb_to_map(ErlNifEnv* env, int argc, const ERL_NIF_TERM ar
     memcpy(dbname, layBin.data, layBin.size);
 
     enif_rwlock_rlock(handle->layers_rwlock);
-    khiter_t k = kh_get(layer, handle->layers, dbname);
+    bool exist = (kh_get(layer,handle->layers, dbname) != kh_end(handle->layers));
     enif_rwlock_runlock(handle->layers_rwlock);
+    if (!exist) {
+        ERR_LOG("no layer(sub-db) created for %s", dbname);
+        return enif_raise_exception(env, 
+                enif_make_tuple2(env, ATOM_DBI_NOT_FOUND, argv[1]));
+    }
 
     int ret;
     ERL_NIF_TERM err;
@@ -384,7 +435,7 @@ static ERL_NIF_TERM elmdb_to_map(ErlNifEnv* env, int argc, const ERL_NIF_TERM ar
     CHECK(mdb_txn_begin(handle->env, NULL, MDB_RDONLY, &txn), err2);
     MDB_dbi dbi;
     CHECK(mdb_dbi_open(txn, dbname, 0, &dbi), err2);
-    DBG("open dbi: %d", dbi);
+    DBG("open sub-db: %d for %s", dbi, dbname);
     MDB_cursor *cur;
     CHECK(mdb_cursor_open(txn, dbi, &cur), err1);
 
@@ -412,7 +463,7 @@ err1:
     mdb_dbi_close(handle->env, dbi);
 err2:
     mdb_txn_abort(txn);
-    return err;
+    return enif_raise_exception(env, err);
 }
 
 static ERL_NIF_TERM hello(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
@@ -464,6 +515,7 @@ err2:
 static ErlNifFunc nif_funcs[] = {
     {"init",        1, elmdb_init, ERL_NIF_DIRTY_JOB_IO_BOUND},
     {"close",       1, elmdb_close, ERL_NIF_DIRTY_JOB_IO_BOUND},
+    {"drop",        2, elmdb_drop, ERL_NIF_DIRTY_JOB_IO_BOUND},
     {"put",         3, elmdb_put},
     {"get",         2, elmdb_get},
     {"list_layers", 1, elmdb_list_layers},
