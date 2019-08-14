@@ -1,5 +1,6 @@
 #include <errno.h>
 #include <string.h>
+#include <stdbool.h>
 
 #include "erl_nif.h"
 #include <erl_driver.h>
@@ -29,6 +30,8 @@ static ErlNifResourceType *lmdbEnvResType;
 
 typedef struct lmdb_env_s {
     MDB_env *env;
+
+    ErlNifRWLock* layers_rwlock;
     khash_t(layer) *layers;
 } lmdb_env_t;
 
@@ -39,12 +42,14 @@ static void lmdb_close(lmdb_env_t* lmdb) {
             DBG("\tfree dbnames & destroy kh");
             const char* dbname = NULL;
             MDB_dbi dbi;
+            enif_rwlock_rwlock(lmdb->layers_rwlock);
             kh_foreach(lmdb->layers, dbname, dbi, {
                 DBG("\tfree dbi: %s", dbname);    
                 //mdb_dbi_close(lmdb->env, dbi);    
                 free((void*)dbname);
             });
             kh_destroy(layer, lmdb->layers);
+            enif_rwlock_rwunlock(lmdb->layers_rwlock);
             lmdb->layers = NULL;
         }
         if (lmdb->env) {
@@ -52,6 +57,9 @@ static void lmdb_close(lmdb_env_t* lmdb) {
             mdb_env_close(lmdb->env);
             lmdb->env = NULL;
         }
+
+        enif_rwlock_destroy(lmdb->layers_rwlock);
+        lmdb->layers_rwlock = NULL;
     }
 }
 
@@ -187,6 +195,7 @@ static ERL_NIF_TERM elmdb_init(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv
 
     handle->env = ctx;
     handle->layers = layers;
+    handle->layers_rwlock = enif_rwlock_create("khash-lock");
     ERL_NIF_TERM term = enif_make_resource(env, handle);
     enif_release_resource(handle);
     return term;
@@ -239,6 +248,8 @@ static ERL_NIF_TERM elmdb_put(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
     MDB_dbi dbi;
     char dbname[128] = {0};
     memcpy(dbname, layBin.data, layBin.size);
+
+    enif_rwlock_rwlock(handle->layers_rwlock);
     if (kh_get(layer,handle->layers, dbname) == kh_end(handle->layers)) {
         CHECK(mdb_dbi_open(txn, dbname, MDB_CREATE, &dbi), err1);
         DBG("the layer(%s) not found, create one(dbi=%d)", dbname, dbi);
@@ -250,6 +261,7 @@ static ERL_NIF_TERM elmdb_put(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
     else {
         CHECK(mdb_dbi_open(txn, dbname, 0, &dbi), err1);
     }
+    enif_rwlock_rwunlock(handle->layers_rwlock);
 
     ErlNifBinary valTerm;
     if (!enif_inspect_binary(env, argv[2], &valTerm)) {
@@ -292,11 +304,13 @@ static ERL_NIF_TERM elmdb_get(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
         return enif_make_badarg(env);
     }
 
-    char dbname[128] = {};
+    char dbname[128] = {0};
     memcpy(dbname, layBin.data, layBin.size);
-    dbname[layBin.size] = '\0';
-    if (kh_get(layer,handle->layers, dbname) == kh_end(handle->layers)) {
-        ERR_LOG("no layer found for %s", dbname);
+    enif_rwlock_rlock(handle->layers_rwlock);
+    bool created = (kh_get(layer,handle->layers, dbname) != kh_end(handle->layers));
+    enif_rwlock_runlock(handle->layers_rwlock);
+    if (!created) {
+        ERR_LOG("no layer created for %s", dbname);
         return enif_raise_exception(env, 
                 enif_make_tuple2(env, ATOM_DBI_NOT_FOUND, laykey[0]));
     }
@@ -336,11 +350,69 @@ static ERL_NIF_TERM elmdb_list_layers(ErlNifEnv* env, int argc, const ERL_NIF_TE
     ERL_NIF_TERM list = enif_make_list(env, 0);
     const char* dbname = NULL;
     MDB_dbi dbi;
+    enif_rwlock_rlock(handle->layers_rwlock);
     kh_foreach(handle->layers, dbname, dbi, {
         ERL_NIF_TERM hd = enif_make_string(env, dbname, ERL_NIF_LATIN1);    
         list = enif_make_list_cell(env, hd, list);    
     });
+    enif_rwlock_runlock(handle->layers_rwlock);
     return list;
+}
+
+static ERL_NIF_TERM elmdb_to_map(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
+    lmdb_env_t *handle = NULL;
+    if (!enif_get_resource(env, argv[0], lmdbEnvResType, (void**)&handle)) {
+        return enif_make_badarg(env);
+    }
+    if (handle->env == NULL) return enif_raise_exception(env, enif_make_string(env, "closed lmdb", ERL_NIF_LATIN1));
+
+    ErlNifBinary layBin;
+    if (!enif_inspect_iolist_as_binary(env, argv[1], &layBin)) {
+        return enif_make_badarg(env);
+    }
+    char dbname[128] = {0};
+    memcpy(dbname, layBin.data, layBin.size);
+
+    enif_rwlock_rlock(handle->layers_rwlock);
+    khiter_t k = kh_get(layer, handle->layers, dbname);
+    enif_rwlock_runlock(handle->layers_rwlock);
+
+    int ret;
+    ERL_NIF_TERM err;
+
+    MDB_txn *txn = NULL;
+    CHECK(mdb_txn_begin(handle->env, NULL, MDB_RDONLY, &txn), err2);
+    MDB_dbi dbi;
+    CHECK(mdb_dbi_open(txn, dbname, 0, &dbi), err2);
+    DBG("open dbi: %d", dbi);
+    MDB_cursor *cur;
+    CHECK(mdb_cursor_open(txn, dbi, &cur), err1);
+
+    ERL_NIF_TERM map = enif_make_new_map(env);
+    MDB_val key, val;
+    MDB_cursor_op op = MDB_FIRST;
+    int rc;
+    do {
+        rc = mdb_cursor_get(cur, &key, &val, op);
+        ERL_NIF_TERM keyTerm;
+        unsigned char* ptr = enif_make_new_binary(env, key.mv_size, &keyTerm);
+        memcpy(ptr, key.mv_data, key.mv_size);
+        ERL_NIF_TERM valTerm;
+        ptr = enif_make_new_binary(env, val.mv_size, &valTerm);
+        memcpy(ptr, val.mv_data, val.mv_size);
+        enif_make_map_put(env, map, keyTerm, valTerm, &map);
+        op = MDB_NEXT;
+    } while (rc != MDB_NOTFOUND);
+    mdb_cursor_close(cur);
+    mdb_dbi_close(handle->env, dbi);
+    mdb_txn_abort(txn);
+    return map;
+
+err1:
+    mdb_dbi_close(handle->env, dbi);
+err2:
+    mdb_txn_abort(txn);
+    return err;
 }
 
 static ERL_NIF_TERM hello(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
@@ -395,6 +467,7 @@ static ErlNifFunc nif_funcs[] = {
     {"put",         3, elmdb_put},
     {"get",         2, elmdb_get},
     {"list_layers", 1, elmdb_list_layers},
+    {"to_map",      2, elmdb_to_map},
     {"hello",       1, hello}
 };
 

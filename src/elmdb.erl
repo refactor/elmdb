@@ -1,6 +1,7 @@
 -module(elmdb).
 
 -export([hello/1]).
+-export([to_map/2]).
 -export([init/1]).
 -export([close/1]).
 -export([put/3]).
@@ -19,6 +20,9 @@ on_load() ->
 	erlang:load_nif(filename:join(PrivDir, atom_to_list(?MODULE)), 0).
 
 hello(_) ->
+	erlang:nif_error({not_loaded, ?MODULE}).
+
+to_map(_Reference, _Layer) ->
 	erlang:nif_error({not_loaded, ?MODULE}).
 
 -spec init(filelib:dirname()) -> reference().
