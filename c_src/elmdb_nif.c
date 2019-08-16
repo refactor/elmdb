@@ -10,6 +10,8 @@
 #include "liblmdb/lmdb.h"
 #include "mylog.h"
 
+#define SUBDB_NAME_SZ 64
+
 #define CHECK(expr, label)                      \
     if (MDB_SUCCESS != (ret = (expr))) {                \
     ERR_LOG("CHECK(\"%s\") failed \"%s(%d)\" at %s:%d in %s()\n",   \
@@ -132,7 +134,7 @@ static void unload(ErlNifEnv* env, void* priv_data) {
 }
 
 static ERL_NIF_TERM elmdb_init(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
-    char dirname[128];
+    char dirname[128] = {0};
     if (!enif_get_string(env, argv[0], dirname, sizeof(dirname), ERL_NIF_LATIN1)) {
         return enif_make_badarg(env);
     }
@@ -230,7 +232,7 @@ static ERL_NIF_TERM elmdb_drop(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv
     if (!enif_inspect_iolist_as_binary(env, argv[1], &layBin)) {
         return enif_make_badarg(env);
     }
-    char dbname[128] = {0};
+    char dbname[SUBDB_NAME_SZ] = {0};
     memcpy(dbname, layBin.data, layBin.size);
 
     enif_rwlock_rlock(handle->layers_rwlock);
@@ -292,7 +294,7 @@ static ERL_NIF_TERM elmdb_put(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
     CHECK(mdb_txn_begin(handle->env, NULL, 0, &txn), err1);
 
     MDB_dbi dbi;
-    char dbname[128] = {0};
+    char dbname[SUBDB_NAME_SZ] = {0};
     memcpy(dbname, layBin.data, layBin.size);
 
     enif_rwlock_rwlock(handle->layers_rwlock);
@@ -347,7 +349,7 @@ static ERL_NIF_TERM elmdb_get(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
         return enif_make_badarg(env);
     }
 
-    char dbname[128] = {0};
+    char dbname[SUBDB_NAME_SZ] = {0};
     memcpy(dbname, layBin.data, layBin.size);
     enif_rwlock_rlock(handle->layers_rwlock);
     bool exist = (kh_get(layer,handle->layers, dbname) != kh_end(handle->layers));
@@ -403,7 +405,7 @@ static ERL_NIF_TERM elmdb_del(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
         return enif_make_badarg(env);
     }
 
-    char dbname[128] = {0};
+    char dbname[SUBDB_NAME_SZ] = {0};
     memcpy(dbname, layBin.data, layBin.size);
     enif_rwlock_rlock(handle->layers_rwlock);
     bool exist = (kh_get(layer,handle->layers, dbname) != kh_end(handle->layers));
@@ -466,7 +468,7 @@ static ERL_NIF_TERM elmdb_to_map(ErlNifEnv* env, int argc, const ERL_NIF_TERM ar
     if (!enif_inspect_iolist_as_binary(env, argv[1], &layBin)) {
         return enif_make_badarg(env);
     }
-    char dbname[128] = {0};
+    char dbname[SUBDB_NAME_SZ] = {0};
     memcpy(dbname, layBin.data, layBin.size);
 
     enif_rwlock_rlock(handle->layers_rwlock);
