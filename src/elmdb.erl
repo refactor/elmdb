@@ -5,10 +5,11 @@
 -export([init/1]).
 -export([close/1]).
 -export([drop/2]).
+-export([count/2]).
 -export([put/3]).
 -export([get/2]).
 -export([del/2]).
--export([list_layers/1]).
+-export([ls/1]).
 
 -on_load(on_load/0).
 on_load() ->
@@ -39,6 +40,10 @@ close(_) ->
 drop(_LmdbRes, _Layer) ->
 	erlang:nif_error({not_loaded, ?MODULE}).
 
+-spec count(reference(), string()) -> ok | {error, any()}.
+count(_LmdbRes, _Layer) ->
+	erlang:nif_error({not_loaded, ?MODULE}).
+
 put(_LmdbRes, {_Layer,_Key}, _Value) ->
 	erlang:nif_error({not_loaded, ?MODULE}).
 
@@ -48,5 +53,5 @@ get(_LmdbRes, {_Layer,_Key}) ->
 del(_LmdbRes, {_Layer,_Key}) ->
 	erlang:nif_error({not_loaded, ?MODULE}).
 
-list_layers(_LmdbRes) ->
+ls(_LmdbRes) ->
 	erlang:nif_error({not_loaded, ?MODULE}).
