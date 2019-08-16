@@ -26,7 +26,7 @@
     goto label;                 \
     } while(0)
 
-KHASH_MAP_INIT_STR(layer, MDB_dbi)
+KHASH_MAP_INIT_STR(layer, unsigned int)
 
 static ErlNifResourceType *lmdbEnvResType;
 
@@ -144,7 +144,7 @@ static ERL_NIF_TERM elmdb_init(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv
 
     MDB_env *ctx;
     CHECK(mdb_env_create(&ctx), err2);
-    CHECK(mdb_env_set_maxdbs(ctx, 256), err2);
+    CHECK(mdb_env_set_maxdbs(ctx, 256 - 2), err2);
     CHECK(mdb_env_set_mapsize(ctx, 10485760), err2);
 
     unsigned int envFlags = 0 | MDB_NOTLS; 
@@ -166,14 +166,10 @@ static ERL_NIF_TERM elmdb_init(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv
         if (memchr(key.mv_data, '\0', key.mv_size))
             continue;
 
-        DBG("key: -> %p, sz=%d", key.mv_data, key.mv_size);
-        DBG("key: len=%u", strlen(key.mv_data));
         char *dbname = calloc(key.mv_size + 1, 1);  
         memcpy(dbname, key.mv_data, key.mv_size);
-        DBG("key: sz=%d, strlen=%d", key.mv_size, strlen(key.mv_data));
-        MDB_dbi dbl;
-        if (mdb_dbi_open(rotxn, dbname, 0, &dbl) == MDB_SUCCESS) {
-            DBG("layer --> name=%s, dbi=%d", dbname, dbl);
+        MDB_dbi subdb;
+        if (mdb_dbi_open(rotxn, dbname, 0, &subdb) == MDB_SUCCESS) {
             int absent = 0;
             khiter_t k = kh_put(layer, layers, dbname, &absent);
             if (absent) {
@@ -182,8 +178,11 @@ static ERL_NIF_TERM elmdb_init(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv
             else {
                 free(dbname);
             }
-            kh_value(layers, k) = dbl; // DO NOT use it, cannot reuse
-            mdb_dbi_close(ctx, dbl);
+            unsigned int dbiflags = 0;
+            CHECK(mdb_dbi_flags(rotxn, subdb, &dbiflags), err1);
+            DBG("subdb -> name=%s, dbi=%d, dbiflags=%u", dbname, subdb, dbiflags);
+            kh_value(layers, k) = dbiflags;
+            mdb_dbi_close(ctx, subdb);
         }
         else {
             WARN_LOG("not a dbi: %s", dbname);
@@ -309,6 +308,38 @@ err2:
     return enif_raise_exception(env, err);
 }
 
+typedef struct my_key_s {
+    MDB_val key;
+    unsigned int type;
+    union {
+        ErlNifBinary keyBin;
+        int64_t keyInt;
+    };
+} my_key_t;
+
+static bool get_mykey_from(ErlNifEnv *env, const ERL_NIF_TERM kt, my_key_t *mykey) {
+    switch (enif_term_type(env, kt)) {
+        case ERL_NIF_TERM_TYPE_BITSTRING:
+            if (!enif_inspect_binary(env, kt, &mykey->keyBin)) {
+                return false;
+            }
+            mykey->key.mv_size = mykey->keyBin.size;
+            mykey->key.mv_data = mykey->keyBin.data;
+            return true;
+        case ERL_NIF_TERM_TYPE_INTEGER:
+            if (!enif_get_int64(env, kt, (ErlNifSInt64*)&mykey->keyInt)) {
+                return false;
+            }
+            mykey->key.mv_size = sizeof(ErlNifSInt64);
+            mykey->key.mv_data = &mykey->keyInt;
+            mykey->type = MDB_INTEGERKEY;
+            return true;
+        default:
+            ERR_LOG("unknow key type, only support int & string");
+            return false;
+    }
+
+}
 static ERL_NIF_TERM elmdb_put(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
     lmdb_env_t *handle = NULL;
     if (!enif_get_resource(env, argv[0], lmdbEnvResType, (void**)&handle)) {
@@ -322,10 +353,13 @@ static ERL_NIF_TERM elmdb_put(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
         return enif_make_badarg(env);
     }
     ErlNifBinary layBin;
-    ErlNifBinary keyBin;
     if (arity != 2 ||
-        !enif_inspect_iolist_as_binary(env, laykey[0], &layBin) ||
-        !enif_inspect_binary(env, laykey[1], &keyBin)) {
+        !enif_inspect_iolist_as_binary(env, laykey[0], &layBin)) {
+        return enif_make_badarg(env);
+    }
+
+    my_key_t mykey = { 0 };
+    if (!get_mykey_from(env, laykey[1], &mykey)) {
         return enif_make_badarg(env);
     }
 
@@ -339,32 +373,47 @@ static ERL_NIF_TERM elmdb_put(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
     char dbname[SUBDB_NAME_SZ] = {0};
     memcpy(dbname, layBin.data, layBin.size);
 
+    unsigned int dbiFlags = 0;
     enif_rwlock_rwlock(handle->layers_rwlock);
-    if (kh_get(layer,handle->layers, dbname) == kh_end(handle->layers)) {
-        DBG("the layer(%s) not found, create one(dbi=%d)", dbname, dbi);
+    khiter_t it;
+    if ((it=kh_get(layer,handle->layers, dbname)) == kh_end(handle->layers)) {
+        DBG("the layer(%s) not found, create it.", dbname);
+        dbiFlags |= mykey.type;
         int absent = 0;
         khiter_t k = kh_put(layer, handle->layers, dbname, &absent);
         if (absent) kh_key(handle->layers, k) = strndup(dbname, sizeof(dbname));
-        kh_value(handle->layers, k) = dbi;
+        kh_value(handle->layers, k) = dbiFlags;
+        dbiFlags |= MDB_CREATE;
     }
+    else {
+        unsigned int flags = kh_value(handle->layers, it);
+        if ((mykey.type & MDB_INTEGERKEY) != (flags & MDB_INTEGERKEY)) {
+            ERR_LOG("dbi_flags changed, DO NOT do this");
+            err = enif_raise_exception(env, enif_make_string(env, "key type changed", ERL_NIF_LATIN1));
+            goto err0;
+        }
+    }
+    // must not be called from multiple concurrent transactions in the same process
+    CHECK(mdb_dbi_open(txn, dbname, dbiFlags, &dbi), err0);
     enif_rwlock_rwunlock(handle->layers_rwlock);
-    CHECK(mdb_dbi_open(txn, dbname, MDB_CREATE, &dbi), err1);
+
+    //mdb_dbi_flags(txn, dbi, &dbiFlags);
 
     ErlNifBinary valTerm;
     if (!enif_inspect_binary(env, argv[2], &valTerm)) {
         return enif_make_badarg(env);
     }
 
-    MDB_val key, val;
-    key.mv_size = keyBin.size;
-    key.mv_data = keyBin.data;
+    MDB_val val;
     val.mv_size = valTerm.size;
     val.mv_data = valTerm.data;
 
-    CHECK(mdb_put(txn, dbi, &key, &val, 0), err1);
-    CHECK(mdb_txn_commit(txn), err2);
+    CHECK(mdb_put(txn, dbi, &mykey.key, &val, 0), err1);
+    CHECK(mdb_txn_commit(txn), err1);
     return argv[0];
 
+err0:
+    enif_rwlock_rwunlock(handle->layers_rwlock);
 err1:
     mdb_txn_abort(txn);
 err2:
@@ -384,10 +433,13 @@ static ERL_NIF_TERM elmdb_get(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
         return enif_make_badarg(env);
     }
     ErlNifBinary layBin;
-    ErlNifBinary keyBin;
     if (arity != 2 ||
-        !enif_inspect_iolist_as_binary(env, laykey[0], &layBin) ||
-        !enif_inspect_binary(env, laykey[1], &keyBin)) {
+        !enif_inspect_iolist_as_binary(env, laykey[0], &layBin)) {
+        return enif_make_badarg(env);
+    }
+
+    my_key_t mykey = { 0 };
+    if (!get_mykey_from(env, laykey[1], &mykey)) {
         return enif_make_badarg(env);
     }
 
@@ -406,15 +458,15 @@ static ERL_NIF_TERM elmdb_get(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
     ERL_NIF_TERM err;
 
     MDB_txn *txn = NULL;
-    CHECK(mdb_txn_begin(handle->env, NULL, MDB_RDONLY, &txn), err1);
+    CHECK(mdb_txn_begin(handle->env, NULL, MDB_RDONLY, &txn), err2);
     MDB_dbi dbi;
     CHECK(mdb_dbi_open(txn, dbname, 0, &dbi), err1);
-    DBG("open dbi: %d", dbi);
     
-    MDB_val key, val;
-    key.mv_size = keyBin.size;
-    key.mv_data = keyBin.data;
-    CHECK( mdb_get(txn, dbi, &key, &val), err1);
+    unsigned int ff = 0;
+    CHECK(mdb_dbi_flags(txn, dbi, &ff), err1);
+
+    MDB_val val;
+    CHECK( mdb_get(txn, dbi, &mykey.key, &val), err1);
     mdb_txn_abort(txn);
 
     ERL_NIF_TERM res;
@@ -424,6 +476,7 @@ static ERL_NIF_TERM elmdb_get(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
 
 err1:
     mdb_txn_abort(txn);
+err2:
     return err;
 }
 
@@ -530,6 +583,8 @@ static ERL_NIF_TERM elmdb_to_map(ErlNifEnv* env, int argc, const ERL_NIF_TERM ar
     MDB_dbi dbi;
     CHECK(mdb_dbi_open(txn, dbname, 0, &dbi), err2);
     DBG("open sub-db: %d for %s", dbi, dbname);
+    unsigned int dbflag = 0;
+    CHECK(mdb_dbi_flags(txn, dbi, &dbflag), err1);
     MDB_cursor *cur;
     CHECK(mdb_cursor_open(txn, dbi, &cur), err1);
 
@@ -538,10 +593,15 @@ static ERL_NIF_TERM elmdb_to_map(ErlNifEnv* env, int argc, const ERL_NIF_TERM ar
     MDB_cursor_op op = MDB_FIRST;
     while ((ret = mdb_cursor_get(cur, &key, &val, op)) != MDB_NOTFOUND) {
         ERL_NIF_TERM keyTerm;
-        unsigned char* ptr = enif_make_new_binary(env, key.mv_size, &keyTerm);
-        memcpy(ptr, key.mv_data, key.mv_size);
+        if (dbflag & MDB_INTEGERKEY) {
+            keyTerm = enif_make_int64(env, *((ErlNifSInt64*)key.mv_data));
+        }
+        else {
+            unsigned char* ptr = enif_make_new_binary(env, key.mv_size, &keyTerm);
+            memcpy(ptr, key.mv_data, key.mv_size);
+        }
         ERL_NIF_TERM valTerm;
-        ptr = enif_make_new_binary(env, val.mv_size, &valTerm);
+        unsigned char* ptr = enif_make_new_binary(env, val.mv_size, &valTerm);
         memcpy(ptr, val.mv_data, val.mv_size);
         enif_make_map_put(env, map, keyTerm, valTerm, &map);
         op = MDB_NEXT;
@@ -594,9 +654,7 @@ static ERL_NIF_TERM hello(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
     }
     mdb_txn_abort(txn);
 
-    return enif_make_tuple2(env,
-        enif_make_atom(env, "error"),
-        enif_make_atom(env, "badarg"));
+    return ATOM_OK;
 
 err1:
     mdb_txn_abort(txn);

@@ -2,7 +2,8 @@
 
 -export([hello/1]).
 -export([to_map/2]).
--export([init/1]).
+
+-export([open/1]).
 -export([close/1]).
 -export([drop/2]).
 -export([count/2]).
@@ -27,6 +28,11 @@ hello(_) ->
 
 to_map(_LmdbRes, _Layer) ->
 	erlang:nif_error({not_loaded, ?MODULE}).
+
+-spec open(filelib:dirname()) -> reference().
+open(DirName) ->
+    filelib:ensure_dir(DirName ++ "/"),
+    init(DirName).
 
 -spec init(filelib:dirname()) -> reference().
 init(_) ->
