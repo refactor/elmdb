@@ -10,6 +10,8 @@
 -export([put/3]).
 -export([get/2]).
 -export([del/2]).
+-export([range/3]).
+-export([range/4]).
 -export([ls/1]).
 
 -on_load(on_load/0).
@@ -27,6 +29,12 @@ hello(_) ->
 	erlang:nif_error({not_loaded, ?MODULE}).
 
 to_map(_LmdbRes, _Layer) ->
+	erlang:nif_error({not_loaded, ?MODULE}).
+
+range(_LmdbRes, _Layer, _Begin) ->
+	erlang:nif_error({not_loaded, ?MODULE}).
+
+range(_LmdbRes, _Layer, _Begin, _End) ->
 	erlang:nif_error({not_loaded, ?MODULE}).
 
 -spec open(filelib:dirname()) -> reference().

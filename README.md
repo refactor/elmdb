@@ -10,6 +10,8 @@ every key-value must be in a named sub-db
 * `ls/1`: list all sub-db
 * `put/3`: inserts/update Key with value Val into the sub-db
 * `get/2`: retrieves the value stored with Key in the sub-db
+* `range/3`: retrives the key-value pairs in the range [From...) in the sub-db
+* `range/4`: retrives the key-value pairs between the range [From,To] in the sub-db
 * `del/2`: Removes the key-value pair with key from the sub-db
 * `count/2`: Count the key-value number for the sub-db
 * `drop/2`: deletes all key-value pairs in the sub-db.
