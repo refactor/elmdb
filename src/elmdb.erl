@@ -10,6 +10,8 @@
 -export([put/3]).
 -export([get/2]).
 -export([del/2]).
+-export([minkey/2]).
+-export([maxkey/2]).
 -export([range/3]).
 -export([range/4]).
 -export([ls/1]).
@@ -65,6 +67,12 @@ get(_LmdbRes, {_Layer,_Key}) ->
 	erlang:nif_error({not_loaded, ?MODULE}).
 
 del(_LmdbRes, {_Layer,_Key}) ->
+	erlang:nif_error({not_loaded, ?MODULE}).
+
+minkey(_LmdbRes, _Layer) ->
+	erlang:nif_error({not_loaded, ?MODULE}).
+
+maxkey(_LmdbRes, _Layer) ->
 	erlang:nif_error({not_loaded, ?MODULE}).
 
 ls(_LmdbRes) ->

@@ -1,5 +1,6 @@
 #pragma once
-#include "erl_nif.h"
+#include <erl_nif.h>
+#include <erl_driver.h>
 #include "liblmdb/lmdb.h"
 
 #ifndef __UNUSED
@@ -108,7 +109,6 @@ s corruption */
        message provided by strerror() for differ across platforms and/or may be
        localized to any given language (i18n).  Use the errno atom rather than
        the message when matching in Erlang.  You've been warned. */
-    return enif_make_tuple(env, 2, ATOM_ERROR,
-        enif_make_tuple(env, 2, term,
-            enif_make_string(env, mdb_strerror(err), ERL_NIF_LATIN1)));
+    return enif_make_tuple(env, 2, term,
+            enif_make_string(env, mdb_strerror(err), ERL_NIF_LATIN1));
 }
