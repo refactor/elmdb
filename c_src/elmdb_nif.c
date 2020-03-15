@@ -16,7 +16,7 @@
     if (MDB_SUCCESS != (ret = (expr))) {                                \
     ERR_LOG("CHECK(\"%s\") failed \"%s(%d)\" at %s:%d in %s()\n",       \
             #expr, mdb_strerror(ret),ret, __FILE__, __LINE__, __func__);\
-    err = __strerror_term(env,ret);                                     \
+    err = enif_raise_exception(env, __strerror_term(env,ret));          \
     goto label;                                                         \
     }
 
@@ -306,6 +306,11 @@ static ERL_NIF_TERM elmdb_put(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
         return enif_make_badarg(env);
     }
 
+    ErlNifBinary valTerm;
+    if (!enif_inspect_binary(env, argv[2], &valTerm)) {
+        return enif_make_badarg(env);
+    }
+
     int ret;
     ERL_NIF_TERM err;
 
@@ -330,6 +335,8 @@ static ERL_NIF_TERM elmdb_put(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
     }
     else {
         unsigned int flags = kh_value(handle->layers, it);
+        DBG("dbiFlags: %u...for %s", flags, dbname);
+        dbiFlags = flags;
         if ((mykey.type & MDB_INTEGERKEY) != (flags & MDB_INTEGERKEY)) {
             ERR_LOG("dbi_flags changed, DO NOT do this");
             err = enif_raise_exception(env, enif_make_string(env, "key type changed", ERL_NIF_LATIN1));
@@ -341,11 +348,6 @@ static ERL_NIF_TERM elmdb_put(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
     enif_rwlock_rwunlock(handle->layers_rwlock);
 
     //mdb_dbi_flags(txn, dbi, &dbiFlags);
-
-    ErlNifBinary valTerm;
-    if (!enif_inspect_binary(env, argv[2], &valTerm)) {
-        return enif_make_badarg(env);
-    }
 
     MDB_val val;
     val.mv_size = valTerm.size;
