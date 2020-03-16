@@ -15,6 +15,9 @@
 -export([range/3]).
 -export([range/4]).
 -export([ls/1]).
+-export([foldl/4]).
+-export([iter/2]).
+-export([next/1]).
 
 -on_load(on_load/0).
 on_load() ->
@@ -77,3 +80,22 @@ maxkey(_LmdbRes, _Layer) ->
 
 ls(_LmdbRes) ->
 	erlang:nif_error({not_loaded, ?MODULE}).
+
+foldl(LmdbRes, Layer, Acc0, Fun) -> 
+    Cursor = iter(LmdbRes, Layer),
+    travel(next(Cursor), Cursor, Acc0, Fun).
+
+travel(end_of_table,_Cursor, Acc, _Fun) ->
+    Acc;
+travel({Key, Value}, Cursor, Acc, Fun) ->
+    NewAcc = Fun({Key, Value}, Acc),
+    travel(next(Cursor), Cursor, NewAcc, Fun).
+
+-spec iter(reference(), string()) -> reference().
+iter(_LmdbRes, _Layer) ->
+	erlang:nif_error({not_loaded, ?MODULE}).
+
+-spec next(reference()) -> {binary(), binary()}.
+next(_Cursor) ->
+	erlang:nif_error({not_loaded, ?MODULE}).
+

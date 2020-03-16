@@ -61,7 +61,7 @@
 
 #else
 
-#define DBG(fmt, ...) enif_fprintf(stdout, GREY("[%34s#%-5d@(tid:%llx)]") " " fmt "\r\n", __FUNCTION__,__LINE__,thrd_id(), ##__VA_ARGS__)
+#define DBG(fmt, ...) enif_fprintf(stdout, GREY("%s-%llx [%34s#%-5d@(tid:%llx)]") " " fmt "\r\n",enif_thread_name(enif_thread_self()), enif_thread_self(),__FUNCTION__,__LINE__,thrd_id(), ##__VA_ARGS__)
 #define WARN(fmt, ...) enif_fprintf(stdout, B_MAGENTA("[%34s#%-5d@(tid:%llx)]") " " fmt "\r\n", __FUNCTION__,__LINE__,thrd_id(), ##__VA_ARGS__)
 
 #endif
