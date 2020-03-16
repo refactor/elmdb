@@ -9,7 +9,9 @@ startup() ->
     D = elmdb:open(Dir),
     D.
 
-teardown(_) ->
+teardown(D) ->
+    [elmdb:drop(D, L) || L <- elmdb:ls(D)],
+    %%ok = elmdb:close(D),
     Dir = "./mytestdb1/",
     [file:delete(F) || F <- filelib:wildcard(Dir ++ "*")],
     file:del_dir(Dir).

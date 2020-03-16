@@ -9,7 +9,10 @@ startup() ->
     D = elmdb:open(Dir),
     D.
 
-teardown(_) ->
+teardown(D) ->
+    [elmdb:drop(D, L) || L <- elmdb:ls(D)],
+    %%ok = elmdb:close(D),
+
     Dir = "./mytestdb2/",
     [file:delete(F) || F <- filelib:wildcard(Dir ++ "*")],
     file:del_dir(Dir).
@@ -26,7 +29,8 @@ fold_normal_db(D) ->
     elmdb:put(D, {Layer, <<"i1">>}, I1),
     elmdb:put(D, {Layer, <<"i2">>}, I2),
     elmdb:put(D, {Layer, <<"i3">>}, I3),
-    Fn = fun({_K,V}, Acc) ->
+    Fn = fun({K,V}, Acc) ->
+                 ?debugFmt("K = ~p",[K]),
                  <<I:32/integer>> = V,
                  I + Acc end,
     [?_assertEqual(6, elmdb:foldl(D, Layer, 0, Fn))].
