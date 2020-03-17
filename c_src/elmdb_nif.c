@@ -61,8 +61,10 @@ static void lmdb_close(lmdb_env_t* lmdb) {
             lmdb->env = NULL;
         }
 
-        enif_rwlock_destroy(lmdb->layers_rwlock);
-        lmdb->layers_rwlock = NULL;
+        if (lmdb->layers_rwlock) {
+            enif_rwlock_destroy(lmdb->layers_rwlock);
+            lmdb->layers_rwlock = NULL;
+        }
     }
 }
 

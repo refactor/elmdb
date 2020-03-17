@@ -3,16 +3,17 @@
 -include_lib("eunit/include/eunit.hrl").
 
 startup() ->
-    ?debugMsg("startup.........."),
     Dir = "./mytestdb1/",
+    ?debugFmt("startup.......... @dir=~ts", [Dir]),
     filelib:ensure_dir(Dir),
     D = elmdb:open(Dir),
     D.
 
 teardown(D) ->
     [elmdb:drop(D, L) || L <- elmdb:ls(D)],
-    %%ok = elmdb:close(D),
+    ok = elmdb:close(D),
     Dir = "./mytestdb1/",
+    ?debugFmt("teardown.......... @dir=~ts", [Dir]),
     [file:delete(F) || F <- filelib:wildcard(Dir ++ "*")],
     file:del_dir(Dir).
 
@@ -21,11 +22,12 @@ list_db(D) ->
     ?debugMsg("list......"),
     PI = <<"3.14159">>,
     E = <<"2.71828">>,
-    elmdb:put(D, {"math", <<"pi">>}, PI),
+    
+    elmdb:put(D, {<<"math">>, <<"pi">>}, PI),
     elmdb:put(D, {"math", <<"e">>},  E),
     [?_assertEqual(2, elmdb:count(D, "math")),
      ?_assertEqual(PI, elmdb:get(D, {"math", <<"pi">>})),
-     ?_assertEqual(E, elmdb:get(D, {"math", <<"e">>}))].
+     ?_assertEqual(E, elmdb:get(D, {<<"math">>, <<"e">>}))].
 
 count_db(D) ->
     ?debugMsg("count......"),
