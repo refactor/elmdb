@@ -197,6 +197,16 @@ static ERL_NIF_TERM elmdb_close(ErlNifEnv* env, int argc, const ERL_NIF_TERM arg
         return enif_raise_exception(env, enif_make_string(env, "closed lmdb", ERL_NIF_LATIN1));\
     }
 
+static ERL_NIF_TERM elmdb_path(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
+    __UNUSED(argc);
+    lmdb_env_t *handle = NULL;
+    CHECKOUT_ARG_FOR_DB(handle);
+    const char* path;
+    mdb_env_get_path(handle->env, &path);
+    DBG("path: %s",path);
+    return enif_make_string(env, path, ERL_NIF_LATIN1);
+}
+
 static ERL_NIF_TERM elmdb_drop(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
     __UNUSED(argc);
     lmdb_env_t *handle = NULL;
@@ -912,6 +922,7 @@ static ErlNifFunc nif_funcs[] = {
     {"init",        1, elmdb_init,      ERL_NIF_DIRTY_JOB_IO_BOUND},
     {"close",       1, elmdb_close,     ERL_NIF_DIRTY_JOB_IO_BOUND},
     {"drop",        2, elmdb_drop,      ERL_NIF_DIRTY_JOB_IO_BOUND},
+    {"db_path",     1, elmdb_path,      0},
     {"count",       2, elmdb_count,     0},
     {"put",         3, elmdb_put,       0},
     {"get",         2, elmdb_get,       0},

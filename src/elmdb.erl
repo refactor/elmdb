@@ -4,6 +4,7 @@
 -export([to_map/2]).
 
 -export([open/1]).
+-export([dispose/1]).
 -export([close/1]).
 -export([drop/2]).
 -export([count/2]).
@@ -54,6 +55,16 @@ init(_) ->
 -spec close(reference()) -> ok | {error, any()}.
 close(_) ->
 	erlang:nif_error({not_loaded, ?MODULE}).
+
+db_path(_) ->
+	erlang:nif_error({not_loaded, ?MODULE}).
+
+-spec dispose(reference()) -> ok | {error, term()}.
+dispose(LmdbRes) ->
+    Dir = db_path(LmdbRes),
+    ok = close(LmdbRes),
+    [file:delete(F) || F <- filelib:wildcard(Dir ++ "*")],
+    file:del_dir(Dir).
 
 -spec drop(reference(), string()) -> ok | {error, any()}.
 drop(_LmdbRes, _Layer) ->

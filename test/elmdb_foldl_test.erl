@@ -13,9 +13,7 @@ teardown(D) ->
     [elmdb:drop(D, L) || L <- elmdb:ls(D)],
     %%ok = elmdb:close(D),
 
-    Dir = "./mytestdb2/",
-    [file:delete(F) || F <- filelib:wildcard(Dir ++ "*")],
-    file:del_dir(Dir).
+    elmdb:dispose(D).
 
 fold_db(D) ->
     [fold_normal_db(D), fold_empty_db(D)].

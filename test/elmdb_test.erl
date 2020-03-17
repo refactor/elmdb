@@ -11,11 +11,10 @@ startup() ->
 
 teardown(D) ->
     [elmdb:drop(D, L) || L <- elmdb:ls(D)],
-    ok = elmdb:close(D),
+    Dir0 = elmdb:dispose(D),
     Dir = "./mytestdb1/",
-    ?debugFmt("teardown.......... @dir=~ts", [Dir]),
-    [file:delete(F) || F <- filelib:wildcard(Dir ++ "*")],
-    file:del_dir(Dir).
+    ?debugFmt("teardown.......... @path=~ts", [Dir0]),
+    ok.
 
 
 list_db(D) ->
