@@ -56,21 +56,25 @@ init(_) ->
 close(_) ->
 	erlang:nif_error({not_loaded, ?MODULE}).
 
+-spec db_path(reference()) -> file:filename() | {error, closed}.
 db_path(_) ->
 	erlang:nif_error({not_loaded, ?MODULE}).
 
--spec dispose(reference()) -> ok | {error, term()}.
+-spec dispose(reference()) -> ok | {error, any()}.
 dispose(LmdbRes) ->
-    Dir = db_path(LmdbRes),
-    ok = close(LmdbRes),
-    [file:delete(F) || F <- filelib:wildcard(Dir ++ "*")],
-    file:del_dir(Dir).
+    try db_path(LmdbRes) of
+        Dir ->
+            ok = close(LmdbRes),
+            [file:delete(F) || F <- filelib:wildcard(Dir ++ "/*")],
+            file:del_dir(Dir)
+    catch error:Reason -> {error, Reason}
+    end.
 
 -spec drop(reference(), string()) -> ok | {error, any()}.
 drop(_LmdbRes, _Layer) ->
 	erlang:nif_error({not_loaded, ?MODULE}).
 
--spec count(reference(), string()) -> ok | {error, any()}.
+-spec count(reference(), string()) -> non_neg_integer().
 count(_LmdbRes, _Layer) ->
 	erlang:nif_error({not_loaded, ?MODULE}).
 

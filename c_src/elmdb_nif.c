@@ -201,6 +201,7 @@ static ERL_NIF_TERM elmdb_path(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv
     __UNUSED(argc);
     lmdb_env_t *handle = NULL;
     CHECKOUT_ARG_FOR_DB(handle);
+
     const char* path;
     mdb_env_get_path(handle->env, &path);
     DBG("path: %s",path);
