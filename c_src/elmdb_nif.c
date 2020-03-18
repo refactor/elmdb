@@ -44,11 +44,11 @@ static void lmdb_close(lmdb_env_t* lmdb) {
         if (lmdb->layers) {
             DBG("\tfree dbnames & destroy kh");
             const char* dbname = NULL;
-            MDB_dbi dbi;
             enif_rwlock_rwlock(lmdb->layers_rwlock);
+            MDB_dbi dbi;
             kh_foreach(lmdb->layers, dbname, dbi, {
                 DBG("\tfree dbi: %s", dbname);    
-                //mdb_dbi_close(lmdb->env, dbi);    
+                mdb_dbi_close(lmdb->env, dbi);
                 free((void*)dbname);
             });
             kh_destroy(layer, lmdb->layers);
@@ -57,6 +57,8 @@ static void lmdb_close(lmdb_env_t* lmdb) {
         }
         if (lmdb->env) {
             DBG("\tclose env!");
+            // All transactions, databases, and cursors
+            // must already be closed before calling this function.
             mdb_env_close(lmdb->env);
             lmdb->env = NULL;
         }
@@ -70,7 +72,7 @@ static void lmdb_close(lmdb_env_t* lmdb) {
 
 static void lmdb_dtor(ErlNifEnv* env, void* obj) {
     __UNUSED(env);
-    INFO_LOG("destroy...... lmdb.env -> %p", obj);
+    INFO_LOG("env-dtor is destroying lmdb.env -> %p", obj);
     lmdb_env_t *lmdb = (lmdb_env_t*)obj;
     lmdb_close(lmdb);
 }
@@ -78,17 +80,18 @@ static void lmdb_dtor(ErlNifEnv* env, void* obj) {
 typedef struct lmdb_cursor_s {
     MDB_cursor *cur;
     MDB_cursor_op op;
-    MDB_txn *txn;
-    MDB_dbi dbi;
+    unsigned int dbflag;
     lmdb_env_t* lmdb;
 } lmdb_cursor_t;
 
 static void lmdb_cursor_close(lmdb_cursor_t* cursor) {
     if (cursor && cursor->cur) {
         DBG("close cursor...");
+        MDB_txn *txn = mdb_cursor_txn(cursor->cur);
+        DBG("closed db's txn: %p", txn);
         mdb_cursor_close(cursor->cur);
-        mdb_txn_commit(cursor->txn);
-        mdb_dbi_close(cursor->lmdb->env, cursor->dbi);
+        mdb_txn_abort(txn);
+        // If the transaction is aborted the dbi will be closed automatically
 
         enif_release_resource(cursor->lmdb);
         cursor->cur = NULL;
@@ -96,7 +99,7 @@ static void lmdb_cursor_close(lmdb_cursor_t* cursor) {
 }
 static void lmdb_cursor_dtor(ErlNifEnv* env, void* obj) {
     __UNUSED(env);
-    INFO_LOG("destroy...... lmdb.env -> %p", obj);
+    INFO_LOG("cursor-dtor is destroying, with lmdb.env: %p", obj);
     lmdb_cursor_t *cursor = (lmdb_cursor_t*)obj;
     lmdb_cursor_close(cursor);
 }
@@ -236,6 +239,7 @@ static ERL_NIF_TERM elmdb_drop(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv
     CHECK(mdb_txn_begin(handle->env, NULL, 0, &txn), err2);
     MDB_dbi dbi;
     CHECK(mdb_dbi_open(txn, dbname, 0, &dbi), err1);
+    // 1 to delete DB from the environment and close the DB handle
     CHECK(mdb_drop(txn, dbi, 1), err1);
     CHECK(mdb_txn_commit(txn), err1);
 
@@ -356,7 +360,6 @@ static ERL_NIF_TERM elmdb_put(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
     MDB_txn *txn = NULL;
     CHECK(mdb_txn_begin(handle->env, NULL, 0, &txn), err2);
 
-    MDB_dbi dbi;
     char dbname[SUBDB_NAME_SZ] = {0};
     memcpy(dbname, layBin.data, layBin.size);
 
@@ -366,10 +369,6 @@ static ERL_NIF_TERM elmdb_put(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
     if ((it=kh_get(layer,handle->layers, dbname)) == kh_end(handle->layers)) {
         DBG("the layer(%s) not found, create it.", dbname);
         dbiFlags |= mykey.type;
-        int absent = 0;
-        khiter_t k = kh_put(layer, handle->layers, dbname, &absent);
-        if (absent) kh_key(handle->layers, k) = strndup(dbname, sizeof(dbname));
-        kh_value(handle->layers, k) = dbiFlags;
         dbiFlags |= MDB_CREATE;
     }
     else {
@@ -382,8 +381,16 @@ static ERL_NIF_TERM elmdb_put(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
             goto err1;
         }
     }
+
+    MDB_dbi dbi;
     // must not be called from multiple concurrent transactions in the same process
     CHECK(mdb_dbi_open(txn, dbname, dbiFlags, &dbi), err1);
+    if (dbiFlags & MDB_CREATE) {
+        int absent = 0;
+        it = kh_put(layer, handle->layers, dbname, &absent);
+        if (absent) kh_key(handle->layers, it) = strndup(dbname, sizeof(dbname));
+        kh_value(handle->layers, it) = mykey.type;
+    }
     enif_rwlock_rwunlock(handle->layers_rwlock);
 
     //mdb_dbi_flags(txn, dbi, &dbiFlags);
@@ -393,13 +400,18 @@ static ERL_NIF_TERM elmdb_put(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
     val.mv_data = valTerm.data;
 
     CHECK(mdb_put(txn, dbi, &mykey.key, &val, 0), err2);
-    CHECK(mdb_txn_commit(txn), err2);
+    CHECK(mdb_txn_commit(txn), err3);
+    // After a successful commit dbi will reside in the shared environment,
+    // and may be used by other transactions.
     return argv[0];
 
 err1:
     enif_rwlock_rwunlock(handle->layers_rwlock);
 err2:
     mdb_txn_abort(txn);
+    // If the transaction is aborted, dbi will be closed automatically.
+    
+err3:
     return err;
 }
 
@@ -755,6 +767,19 @@ err2:
     return enif_raise_exception(env, err);
 }
 
+static ERL_NIF_TERM elmdb_close_iter(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
+    __UNUSED(argc);
+    lmdb_cursor_t *cursor = NULL;
+    if (!enif_get_resource(env, argv[0], lmdbCursorResType, (void**)&cursor)) {
+        return enif_make_badarg(env);
+    }
+    if (cursor->cur == NULL) return enif_raise_exception(env, enif_make_string(env, "closed cursor", ERL_NIF_LATIN1));
+
+    lmdb_cursor_close(cursor);
+
+    return ATOM_OK;
+}
+
 static ERL_NIF_TERM elmdb_next(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
     __UNUSED(argc);
     lmdb_cursor_t *cursor = NULL;
@@ -763,14 +788,11 @@ static ERL_NIF_TERM elmdb_next(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv
     }
     if (cursor->cur == NULL) return enif_raise_exception(env, enif_make_string(env, "closed cursor", ERL_NIF_LATIN1));
 
-    unsigned int dbflag = 0;
     int ret = 0;
-    ERL_NIF_TERM err;
-    CHECK(mdb_dbi_flags(cursor->txn, cursor->dbi, &dbflag), err1);
     MDB_val key, val;
     if ((ret = mdb_cursor_get(cursor->cur, &key, &val, cursor->op)) != MDB_NOTFOUND) {
         ERL_NIF_TERM keyTerm;
-        if (dbflag & MDB_INTEGERKEY) {
+        if (cursor->dbflag & MDB_INTEGERKEY) {
             keyTerm = enif_make_int64(env, *((ErlNifSInt64*)key.mv_data));
         }
         else {
@@ -786,8 +808,6 @@ static ERL_NIF_TERM elmdb_next(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv
     }
 
     return enif_make_atom(env, "end_of_table");
-err1:
-    return enif_raise_exception(env, err);
 }
 
 static ERL_NIF_TERM elmdb_iter(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
@@ -820,7 +840,7 @@ static ERL_NIF_TERM elmdb_iter(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv
     MDB_txn *txn = NULL;
     CHECK(mdb_txn_begin(handle->env, NULL, MDB_RDONLY, &txn), err2);
     MDB_dbi dbi;
-    CHECK(mdb_dbi_open(txn, dbname, 0, &dbi), err2);
+    CHECK(mdb_dbi_open(txn, dbname, 0, &dbi), err1);
     DBG("open sub-db: %d for %s", dbi, dbname);
     unsigned int dbflag = 0;
     CHECK(mdb_dbi_flags(txn, dbi, &dbflag), err1);
@@ -831,8 +851,7 @@ static ERL_NIF_TERM elmdb_iter(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv
     *cursor = (lmdb_cursor_t) {
         .cur = cur,
         .op = MDB_FIRST,
-        .txn = txn,
-        .dbi = dbi,
+        .dbflag = dbflag,
         .lmdb = handle,
     };
     enif_keep_resource(handle);
@@ -842,9 +861,8 @@ static ERL_NIF_TERM elmdb_iter(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv
     return term;
 
 err1:
-    mdb_dbi_close(handle->env, dbi);
-err2:
     mdb_txn_abort(txn);
+err2:
     return enif_raise_exception(env, err);
 }
 
@@ -934,8 +952,9 @@ static ErlNifFunc nif_funcs[] = {
     {"range",       3, elmdb_range,     ERL_NIF_DIRTY_JOB_IO_BOUND},
     {"range",       4, elmdb_range,     ERL_NIF_DIRTY_JOB_IO_BOUND},
     {"to_map",      2, elmdb_to_map,    ERL_NIF_DIRTY_JOB_IO_BOUND},
-    {"iter",        2, elmdb_iter,    ERL_NIF_DIRTY_JOB_IO_BOUND},
-    {"next",        1, elmdb_next,    ERL_NIF_DIRTY_JOB_IO_BOUND},
+    {"iter",        2, elmdb_iter,      ERL_NIF_DIRTY_JOB_IO_BOUND},
+    {"close_iter",  1, elmdb_close_iter,ERL_NIF_DIRTY_JOB_IO_BOUND},
+    {"next",        1, elmdb_next,      ERL_NIF_DIRTY_JOB_IO_BOUND},
     {"hello",       1, hello,           0}
 };
 

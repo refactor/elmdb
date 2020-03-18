@@ -17,10 +17,9 @@
 -export([range/4]).
 -export([ls/1]).
 -export([foldl/4]).
--export([iter/2]).
--export([next/1]).
 
 -on_load(on_load/0).
+
 on_load() ->
 	PrivDir = case code:priv_dir(?MODULE) of
 		{error, _} ->
@@ -99,13 +98,16 @@ ls(_LmdbRes) ->
 	erlang:nif_error({not_loaded, ?MODULE}).
 
 foldl(LmdbRes, Layer, Acc0, Fun) -> 
+    io:format(user, "LAYER=~ts, by~p~n", [Layer, self()]),
     LFun = fun({Key, Value}, Acc) ->
                Fun({{Layer, Key}, Value}, Acc)
            end,
     Cursor = iter(LmdbRes, Layer),
     travel(next(Cursor), Cursor, Acc0, LFun).
 
-travel(end_of_table, _Cursor, Acc, _Fun) ->
+travel(end_of_table, Cursor, Acc, _Fun) ->
+    io:format(user, "MUST close cursor here, but NOT, TODO ~w~n", [end_of_table]),
+    close_iter(Cursor),
     Acc;
 travel({Key, Value}, Cursor, Acc, Fun) ->
     NewAcc = Fun({Key, Value}, Acc),
@@ -113,6 +115,10 @@ travel({Key, Value}, Cursor, Acc, Fun) ->
 
 -spec iter(reference(), string()) -> reference().
 iter(_LmdbRes, _Layer) ->
+	erlang:nif_error({not_loaded, ?MODULE}).
+
+-spec close_iter(reference()) -> ok.
+close_iter(_LmdbRes) ->
 	erlang:nif_error({not_loaded, ?MODULE}).
 
 -spec next(reference()) -> {binary(), binary()}.
