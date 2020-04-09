@@ -304,29 +304,30 @@ typedef struct my_key_s {
     };
 } my_key_t;
 
-static bool get_mykey_from(ErlNifEnv *env, const ERL_NIF_TERM kt, my_key_t *mykey) {
-    switch (enif_term_type(env, kt)) {
-        case ERL_NIF_TERM_TYPE_BITSTRING:
-            if (!enif_inspect_binary(env, kt, &mykey->keyBin)) {
-                return false;
-            }
-            mykey->key.mv_size = mykey->keyBin.size;
-            mykey->key.mv_data = mykey->keyBin.data;
-            return true;
-        case ERL_NIF_TERM_TYPE_INTEGER:
-            if (!enif_get_int64(env, kt, (ErlNifSInt64*)&mykey->keyInt)) {
-                return false;
-            }
-            mykey->key.mv_size = sizeof(ErlNifSInt64);
-            mykey->key.mv_data = &mykey->keyInt;
-            mykey->type = MDB_INTEGERKEY;
-            return true;
-        default:
-            ERR_LOG("unknow key type, only support int & string");
-            return false;
+#define CHECKOUT_MYKEY(kt, mykey, label)                                \
+    switch (enif_term_type(env, kt)) {                                  \
+        case ERL_NIF_TERM_TYPE_BITSTRING:                               \
+            if (!enif_inspect_binary(env, kt, &mykey.keyBin)) {         \
+                break;                                                  \
+            }                                                           \
+            mykey.key.mv_size = mykey.keyBin.size;                      \
+            mykey.key.mv_data = mykey.keyBin.data;                      \
+            mykey.type = 0;                                             \
+            break;                                                      \
+        case ERL_NIF_TERM_TYPE_INTEGER:                                 \
+            if (!enif_get_int64(env, kt, (ErlNifSInt64*)&mykey.keyInt)) {\
+                break;                                                  \
+            }                                                           \
+            mykey.key.mv_size = sizeof(ErlNifSInt64);                   \
+            mykey.key.mv_data = &mykey.keyInt;                          \
+            mykey.type = MDB_INTEGERKEY;                                \
+            break;                                                      \
+        default:                                                        \
+            ERR_LOG("unknow key type, only support int & string");      \
+            err = enif_make_badarg(env);                                \
+            goto label;                                                 \
     }
 
-}
 
 static ERL_NIF_TERM elmdb_put(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
     __UNUSED(argc);
@@ -344,10 +345,9 @@ static ERL_NIF_TERM elmdb_put(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
         return enif_make_badarg(env);
     }
 
+    ERL_NIF_TERM err;
     my_key_t mykey = { };
-    if (!get_mykey_from(env, laykey[1], &mykey)) {
-        return enif_make_badarg(env);
-    }
+    CHECKOUT_MYKEY(laykey[1], mykey, err3);
 
     ErlNifBinary valTerm;
     if (!enif_inspect_binary(env, argv[2], &valTerm)) {
@@ -355,7 +355,6 @@ static ERL_NIF_TERM elmdb_put(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
     }
 
     int ret;
-    ERL_NIF_TERM err;
 
     MDB_txn *txn = NULL;
     CHECK(mdb_txn_begin(handle->env, NULL, 0, &txn), err2);
@@ -431,10 +430,9 @@ static ERL_NIF_TERM elmdb_get(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
         return enif_make_badarg(env);
     }
 
+    ERL_NIF_TERM err;
     my_key_t mykey = { };
-    if (!get_mykey_from(env, laykey[1], &mykey)) {
-        return enif_make_badarg(env);
-    }
+    CHECKOUT_MYKEY(laykey[1], mykey, err2);
 
     char dbname[SUBDB_NAME_SZ] = {0};
     memcpy(dbname, layBin.data, layBin.size);
@@ -448,16 +446,12 @@ static ERL_NIF_TERM elmdb_get(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
     }
 
     int ret;
-    ERL_NIF_TERM err;
 
     MDB_txn *txn = NULL;
     CHECK(mdb_txn_begin(handle->env, NULL, MDB_RDONLY, &txn), err2);
     MDB_dbi dbi;
     CHECK(mdb_dbi_open(txn, dbname, 0, &dbi), err1);
     
-    unsigned int ff = 0;
-    CHECK(mdb_dbi_flags(txn, dbi, &ff), err1);
-
     MDB_val val;
     CHECK( mdb_get(txn, dbi, &mykey.key, &val), err1);
     mdb_txn_abort(txn);
@@ -559,12 +553,15 @@ static ERL_NIF_TERM elmdb_del(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
         return enif_make_badarg(env);
     }
     ErlNifBinary layBin;
-    ErlNifBinary keyBin;
     if (arity != 2 ||
-        !enif_inspect_iolist_as_binary(env, laykey[0], &layBin) ||
-        !enif_inspect_binary(env, laykey[1], &keyBin)) {
+        !enif_inspect_iolist_as_binary(env, laykey[0], &layBin)) {
         return enif_make_badarg(env);
     }
+
+    ERL_NIF_TERM err;
+
+    my_key_t mykey = { };
+    CHECKOUT_MYKEY(laykey[1], mykey, err2);
 
     char dbname[SUBDB_NAME_SZ] = {0};
     memcpy(dbname, layBin.data, layBin.size);
@@ -577,7 +574,6 @@ static ERL_NIF_TERM elmdb_del(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
     }
 
     int ret;
-    ERL_NIF_TERM err;
 
     MDB_txn *txn = NULL;
     CHECK(mdb_txn_begin(handle->env, NULL, 0, &txn), err2);
@@ -585,10 +581,7 @@ static ERL_NIF_TERM elmdb_del(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
     CHECK(mdb_dbi_open(txn, dbname, 0, &dbi), err1);
     DBG("open dbi: %d", dbi);
     
-    MDB_val key;
-    key.mv_size = keyBin.size;
-    key.mv_data = keyBin.data;
-    CHECK( mdb_del(txn, dbi, &key, NULL), err1);
+    CHECK( mdb_del(txn, dbi, &mykey.key, NULL), err1);
     mdb_txn_commit(txn);
     return argv[0];
 
@@ -652,20 +645,14 @@ static ERL_NIF_TERM elmdb_range(ErlNifEnv* env, int argc, const ERL_NIF_TERM arg
     MDB_val val;
 
     my_key_t mykey = { };
-    if (!get_mykey_from(env, argv[2], &mykey)) {
-        err = enif_raise_exception(env, enif_make_string(env, "cannot extract key", ERL_NIF_LATIN1));
-        goto err1;
-    }
+    CHECKOUT_MYKEY(argv[2], mykey, err1);
     MDB_val iterkey;
     iterkey.mv_data = mykey.key.mv_data;
     iterkey.mv_size = mykey.key.mv_size;
 
     my_key_t endkey = { };
     if (argc == 4) {
-        if (!get_mykey_from(env, argv[3], &endkey)) {
-            err = enif_raise_exception(env, enif_make_string(env, "cannot extract key", ERL_NIF_LATIN1));
-            goto err1;
-        }
+        CHECKOUT_MYKEY(argv[3], endkey, err1);
     }
     else {
         CHECK(mdb_cursor_get(cur, &endkey.key, NULL, MDB_LAST), err1);

@@ -81,10 +81,11 @@ count(_LmdbRes, _Layer) ->
 put(_LmdbRes, {_Layer,_Key}, _Value) ->
 	erlang:nif_error({not_loaded, ?MODULE}).
 
--spec get(reference(), {string(), binary()}) -> binary().
+-spec get(reference(), {string(), binary()|integer()}) -> binary().
 get(_LmdbRes, {_Layer,_Key}) ->
 	erlang:nif_error({not_loaded, ?MODULE}).
 
+-spec del(reference(), {string(), binary()|integer()}) -> reference().
 del(_LmdbRes, {_Layer,_Key}) ->
 	erlang:nif_error({not_loaded, ?MODULE}).
 
@@ -98,7 +99,6 @@ ls(_LmdbRes) ->
 	erlang:nif_error({not_loaded, ?MODULE}).
 
 foldl(LmdbRes, Layer, Acc0, Fun) -> 
-    io:format(user, "LAYER=~ts, by~p~n", [Layer, self()]),
     LFun = fun({Key, Value}, Acc) ->
                Fun({{Layer, Key}, Value}, Acc)
            end,
@@ -106,7 +106,6 @@ foldl(LmdbRes, Layer, Acc0, Fun) ->
     travel(next(Cursor), Cursor, Acc0, LFun).
 
 travel(end_of_table, Cursor, Acc, _Fun) ->
-    io:format(user, "MUST close cursor here, but NOT, TODO ~w~n", [end_of_table]),
     close_iter(Cursor),
     Acc;
 travel({Key, Value}, Cursor, Acc, Fun) ->
