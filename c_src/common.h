@@ -10,6 +10,7 @@
 /* Atoms (initialized in on_load) */
 static ERL_NIF_TERM ATOM_ERROR;
 static ERL_NIF_TERM ATOM_OK;
+static ERL_NIF_TERM ATOM_NO_LAYER;
 static ERL_NIF_TERM ATOM_NOT_FOUND;
 static ERL_NIF_TERM ATOM_DBI_NOT_FOUND;
 static ERL_NIF_TERM ATOM_EXISTS;

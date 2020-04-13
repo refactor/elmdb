@@ -10,6 +10,7 @@
 #include "liblmdb/lmdb.h"
 #include "mylog.h"
 
+#define MAXSUBDB 512
 #define SUBDB_NAME_SZ 64
 
 #define CHECK(expr, label)                                              \
@@ -116,7 +117,7 @@ static ERL_NIF_TERM elmdb_init(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv
 
     MDB_env *ctx;
     CHECK(mdb_env_create(&ctx), err2);
-    CHECK(mdb_env_set_maxdbs(ctx, 256 - 2), err2);
+    CHECK(mdb_env_set_maxdbs(ctx, MAXSUBDB - 2), err2);
     CHECK(mdb_env_set_mapsize(ctx, 10485760), err2);
 
     unsigned int envFlags = 0 | MDB_NOTLS; 
@@ -207,7 +208,6 @@ static ERL_NIF_TERM elmdb_path(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv
 
     const char* path;
     mdb_env_get_path(handle->env, &path);
-    DBG("path: %s",path);
     return enif_make_string(env, path, ERL_NIF_LATIN1);
 }
 
@@ -227,7 +227,7 @@ static ERL_NIF_TERM elmdb_drop(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv
     bool exist = (kh_get(layer,handle->layers, dbname) != kh_end(handle->layers));
     enif_rwlock_runlock(handle->layers_rwlock);
     if (!exist) {
-        DBG("layer(sub-db: %s) NOT exist", dbname);
+        DBG("layer(sub-db: %s) NoT exist", dbname);
         return enif_raise_exception(env, 
                 enif_make_tuple2(env, ATOM_DBI_NOT_FOUND, argv[1]));
     }
@@ -272,7 +272,7 @@ static ERL_NIF_TERM elmdb_count(ErlNifEnv* env, int argc, const ERL_NIF_TERM arg
     bool exist = (kh_get(layer,handle->layers, dbname) != kh_end(handle->layers));
     enif_rwlock_runlock(handle->layers_rwlock);
     if (!exist) {
-        ERR_LOG("layer(sub-db: %s) NOT exist", dbname);
+        WARN_LOG("layer(sub-db: %s) NOT exist", dbname);
         return enif_make_int(env, 0);
     }
 
@@ -402,7 +402,7 @@ static ERL_NIF_TERM elmdb_put(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
     CHECK(mdb_txn_commit(txn), err3);
     // After a successful commit dbi will reside in the shared environment,
     // and may be used by other transactions.
-    return argv[0];
+    return ATOM_OK;
 
 err1:
     enif_rwlock_rwunlock(handle->layers_rwlock);
@@ -440,8 +440,8 @@ static ERL_NIF_TERM elmdb_get(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
     bool exist = (kh_get(layer,handle->layers, dbname) != kh_end(handle->layers));
     enif_rwlock_runlock(handle->layers_rwlock);
     if (!exist) {
-        ERR_LOG("no layer created for %s", dbname);
-        return enif_raise_exception(env, 
+        WARN_LOG("no layer created for %s", dbname);
+        return enif_make_tuple2(env, ATOM_ERROR,
                 enif_make_tuple2(env, ATOM_DBI_NOT_FOUND, laykey[0]));
     }
 
@@ -453,7 +453,10 @@ static ERL_NIF_TERM elmdb_get(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
     CHECK(mdb_dbi_open(txn, dbname, 0, &dbi), err1);
     
     MDB_val val;
-    CHECK( mdb_get(txn, dbi, &mykey.key, &val), err1);
+    if (MDB_NOTFOUND == mdb_get(txn, dbi, &mykey.key, &val)) {
+        err = enif_make_tuple2(env, ATOM_ERROR, ATOM_NOTFOUND);
+        goto err1;
+    }
     mdb_txn_abort(txn);
 
     ERL_NIF_TERM res;
@@ -482,7 +485,7 @@ static ERL_NIF_TERM min_max(ErlNifEnv* env, const ERL_NIF_TERM argv[], MDB_curso
     bool exist = (kh_get(layer,handle->layers, dbname) != kh_end(handle->layers));
     enif_rwlock_runlock(handle->layers_rwlock);
     if (!exist) {
-        ERR_LOG("no layer created for %s", dbname);
+        WARN_LOG("no layer created for %s", dbname);
         return enif_raise_exception(env, 
                 enif_make_tuple2(env, ATOM_DBI_NOT_FOUND, argv[1]));
     }
@@ -569,8 +572,10 @@ static ERL_NIF_TERM elmdb_del(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
     bool exist = (kh_get(layer,handle->layers, dbname) != kh_end(handle->layers));
     enif_rwlock_runlock(handle->layers_rwlock);
     if (!exist) {
-        ERR_LOG("no layer created for %s", dbname);
-        return argv[0];
+        WARN_LOG("no layer created for %s", dbname);
+        return enif_make_tuple2(env, ATOM_ERROR, 
+                enif_make_tuple2(env, ATOM_NO_LAYER,
+                    enif_make_string(env, dbname, ERL_NIF_LATIN1)));
     }
 
     int ret;
@@ -581,9 +586,11 @@ static ERL_NIF_TERM elmdb_del(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
     CHECK(mdb_dbi_open(txn, dbname, 0, &dbi), err1);
     DBG("open dbi: %d", dbi);
     
-    CHECK( mdb_del(txn, dbi, &mykey.key, NULL), err1);
-    mdb_txn_commit(txn);
-    return argv[0];
+    if (MDB_NOTFOUND == mdb_del(txn, dbi, &mykey.key, NULL)) 
+        mdb_txn_abort(txn);
+    else
+        mdb_txn_commit(txn);
+    return ATOM_OK;
 
 err1:
     mdb_txn_abort(txn);
@@ -623,7 +630,7 @@ static ERL_NIF_TERM elmdb_range(ErlNifEnv* env, int argc, const ERL_NIF_TERM arg
     bool exist = (kh_get(layer,handle->layers, dbname) != kh_end(handle->layers));
     enif_rwlock_runlock(handle->layers_rwlock);
     if (!exist) {
-        ERR_LOG("no layer(sub-db) created for %s", dbname);
+        WARN_LOG("no layer(sub-db) created for %s", dbname);
         return enif_raise_exception(env, 
                 enif_make_tuple2(env, ATOM_DBI_NOT_FOUND, argv[1]));
     }
@@ -645,17 +652,20 @@ static ERL_NIF_TERM elmdb_range(ErlNifEnv* env, int argc, const ERL_NIF_TERM arg
     MDB_val val;
 
     my_key_t mykey = { };
-    CHECKOUT_MYKEY(argv[2], mykey, err1);
+    CHECKOUT_MYKEY(argv[2], mykey, err2);
     MDB_val iterkey;
     iterkey.mv_data = mykey.key.mv_data;
     iterkey.mv_size = mykey.key.mv_size;
 
     my_key_t endkey = { };
     if (argc == 4) {
-        CHECKOUT_MYKEY(argv[3], endkey, err1);
+        CHECKOUT_MYKEY(argv[3], endkey, err2);
     }
-    else {
-        CHECK(mdb_cursor_get(cur, &endkey.key, NULL, MDB_LAST), err1);
+    else if (mdb_cursor_get(cur, &endkey.key, NULL, MDB_LAST) == MDB_NOTFOUND) {
+        // A cursor in a read-only transaction must be closed explicitly
+        mdb_cursor_close(cur);
+        mdb_txn_abort(txn);
+        return map;
     }
     MDB_cursor_op op = MDB_SET_RANGE;
     while ((ret = mdb_cursor_get(cur, &iterkey, &val, op)) != MDB_NOTFOUND) {
@@ -684,7 +694,8 @@ err1:
     mdb_dbi_close(handle->env, dbi);
 err2:
     mdb_txn_abort(txn);
-    return enif_raise_exception(env, err);
+err3:
+    return err;
 }
 
 static ERL_NIF_TERM elmdb_to_map(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
@@ -706,7 +717,7 @@ static ERL_NIF_TERM elmdb_to_map(ErlNifEnv* env, int argc, const ERL_NIF_TERM ar
     bool exist = (kh_get(layer,handle->layers, dbname) != kh_end(handle->layers));
     enif_rwlock_runlock(handle->layers_rwlock);
     if (!exist) {
-        ERR_LOG("no layer(sub-db) created for %s", dbname);
+        WARN_LOG("no layer(sub-db) created for %s", dbname);
         return enif_raise_exception(env, 
                 enif_make_tuple2(env, ATOM_DBI_NOT_FOUND, argv[1]));
     }
@@ -816,7 +827,7 @@ static ERL_NIF_TERM elmdb_iter(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv
     bool exist = (kh_get(layer,handle->layers, dbname) != kh_end(handle->layers));
     enif_rwlock_runlock(handle->layers_rwlock);
     if (!exist) {
-        ERR_LOG("no layer(sub-db) created for %s", dbname);
+        WARN_LOG("no layer(sub-db) created for %s", dbname);
         return enif_raise_exception(env, 
                 enif_make_tuple2(env, ATOM_DBI_NOT_FOUND, argv[1]));
     }
@@ -871,6 +882,7 @@ static int load(ErlNifEnv* env, void** priv_data, ERL_NIF_TERM load_info)
     loads++;
 
     ATOM_ERROR = enif_make_atom(env, "error");
+    ATOM_NO_LAYER = enif_make_atom(env, "notfound_layer");
     ATOM_OK = enif_make_atom(env, "ok");
     ATOM_NOT_FOUND = enif_make_atom(env, "not_found");
     ATOM_DBI_NOT_FOUND = enif_make_atom(env, "dbi_not_found");

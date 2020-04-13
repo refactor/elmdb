@@ -18,6 +18,10 @@
 -export([ls/1]).
 -export([foldl/4]).
 
+-export([db_path/1]).
+
+-include_lib("kernel/include/logger.hrl").
+
 -on_load(on_load/0).
 
 on_load() ->
@@ -36,9 +40,11 @@ hello(_) ->
 to_map(_LmdbRes, _Layer) ->
 	erlang:nif_error({not_loaded, ?MODULE}).
 
+-spec range(reference(), string(), non_neg_integer()) -> map().
 range(_LmdbRes, _Layer, _Begin) ->
 	erlang:nif_error({not_loaded, ?MODULE}).
 
+-spec range(reference(), string(), non_neg_integer(), non_neg_integer()) -> map().
 range(_LmdbRes, _Layer, _Begin, _End) ->
 	erlang:nif_error({not_loaded, ?MODULE}).
 
@@ -63,6 +69,7 @@ db_path(_) ->
 dispose(LmdbRes) ->
     try db_path(LmdbRes) of
         Dir ->
+            ?LOG_NOTICE("dispose db: ~ts", [Dir]),
             ok = close(LmdbRes),
             [file:delete(F) || F <- filelib:wildcard(Dir ++ "/*")],
             file:del_dir(Dir)
@@ -77,7 +84,7 @@ drop(_LmdbRes, _Layer) ->
 count(_LmdbRes, _Layer) ->
 	erlang:nif_error({not_loaded, ?MODULE}).
 
--spec put(reference(), {string(), binary()}, binary()) -> reference().
+-spec put(reference(), {string(), binary()}, binary()) -> ok.
 put(_LmdbRes, {_Layer,_Key}, _Value) ->
 	erlang:nif_error({not_loaded, ?MODULE}).
 
@@ -85,7 +92,7 @@ put(_LmdbRes, {_Layer,_Key}, _Value) ->
 get(_LmdbRes, {_Layer,_Key}) ->
 	erlang:nif_error({not_loaded, ?MODULE}).
 
--spec del(reference(), {string(), binary()|integer()}) -> reference().
+-spec del(reference(), {string(), binary()|integer()}) -> ok|{error,any()}.
 del(_LmdbRes, {_Layer,_Key}) ->
 	erlang:nif_error({not_loaded, ?MODULE}).
 
