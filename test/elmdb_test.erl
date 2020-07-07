@@ -37,7 +37,8 @@ del_db(D) ->
     ?debugMsg("del......"),
     elmdb:put(D, {"math", <<"PI">>}, <<"3.14">>),
     elmdb:del(D, {"math", <<"PI">>}),
-    [?_assertError({notfound,_}, elmdb:get(D, {"math", <<"PI">>}))].
+    [?_assertEqual({error,notfound}, elmdb:get(D, {"math", <<"PI">>}))].
+    %[?_assertError(notfound, elmdb:get(D, {"math", <<"PI">>}))].
 
 db_test(D) ->
     [list_db(D), 

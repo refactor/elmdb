@@ -48,9 +48,10 @@
 #include <sys/syscall.h>
 #include <sys/types.h>
 
-#define thrd_id() ({ \
-            syscall(SYS_gettid);\
-        })
+long thrd_id() {
+    return syscall(SYS_gettid);
+}
+
 #endif
 
 
@@ -61,8 +62,8 @@
 
 #else
 
-#define DBG(fmt, ...) enif_fprintf(stdout, GREY("%s-%llx [%34s#%-5d@(tid:%llx)]") " " fmt "\r\n",enif_thread_name(enif_thread_self()), enif_thread_self(),__FUNCTION__,__LINE__,thrd_id(), ##__VA_ARGS__)
-#define WARN(fmt, ...) enif_fprintf(stdout, B_MAGENTA("[%34s#%-5d@(tid:%llx)]") " " fmt "\r\n", __FUNCTION__,__LINE__,thrd_id(), ##__VA_ARGS__)
+#define DBG(fmt, ...) enif_fprintf(stdout, GREY("%s-%llx [%34s#%-5d@(tid:%llx)]") " " fmt "\r\n",enif_thread_name(enif_thread_self()), enif_thread_self(),__func__,__LINE__,thrd_id(), ##__VA_ARGS__)
+#define WARN(fmt, ...) enif_fprintf(stdout, B_MAGENTA("[%34s#%-5d@(tid:%llx)]") " " fmt "\r\n", __func__,__LINE__,thrd_id(), ##__VA_ARGS__)
 #define WARN_LOG(fmt, ...) enif_fprintf(stderr, B_YELLOW("[@(tid:%llx)] " fmt) "\r\n", thrd_id(), ##__VA_ARGS__)
 
 #endif

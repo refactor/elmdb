@@ -2,7 +2,7 @@
 #include <string.h>
 #include <stdbool.h>
 
-#include "erl_nif.h"
+#include <erl_nif.h>
 #include <erl_driver.h>
 
 #include "khash.h"
@@ -10,15 +10,21 @@
 #include "liblmdb/lmdb.h"
 #include "mylog.h"
 
-#define MAXSUBDB 512
+#define MAXSUBDB 32765
 #define SUBDB_NAME_SZ 64
 
-#define CHECK(expr, label)                                              \
-    if (MDB_SUCCESS != (ret = (expr))) {                                \
-    ERR_LOG("CHECK(\"%s\") failed \"%s(%d)\" at %s:%d in %s()\n",       \
-            #expr, mdb_strerror(ret),ret, __FILE__, __LINE__, __func__);\
-    err = enif_raise_exception(env, __strerror_term(env,ret));          \
-    goto label;                                                         \
+#define CHECK(expr, label)                                                  \
+    switch (ret = (expr)) {                                                 \
+        case MDB_SUCCESS:                                                   \
+            break;                                                          \
+        case MDB_NOTFOUND:                                                  \
+            err = enif_make_tuple2(env, ATOM_ERROR, ATOM_NOTFOUND);         \
+            goto label;                                                     \
+        default:                                                            \
+            ERR_LOG("CHECK(\"%s\") failed \"%s(%d)\" at %s:%d in %s()\n",   \
+            #expr, mdb_strerror(ret),ret, __FILE__, __LINE__, __func__);    \
+            err = enif_raise_exception(env, __strerror_term(env,ret));      \
+            goto label;                                                     \
     }
 
 #define FAIL_ERR(e, label)                                          \
@@ -117,6 +123,7 @@ static ERL_NIF_TERM elmdb_init(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv
 
     MDB_env *ctx;
     CHECK(mdb_env_create(&ctx), err2);
+    CHECK(mdb_env_set_maxreaders(ctx, 1024), err2);
     CHECK(mdb_env_set_maxdbs(ctx, MAXSUBDB - 2), err2);
     CHECK(mdb_env_set_mapsize(ctx, 10485760), err2);
 
@@ -155,7 +162,7 @@ static ERL_NIF_TERM elmdb_init(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv
             CHECK(mdb_dbi_flags(rotxn, subdb, &dbiflags), err1);
             DBG("subdb -> name=%s, dbi=%d, dbiflags=%u", dbname, subdb, dbiflags);
             kh_value(layers, k) = dbiflags;
-            mdb_dbi_close(ctx, subdb);
+            //mdb_dbi_close(ctx, subdb);
         }
         else {
             WARN_LOG("not a dbi: %s", dbname);
@@ -165,7 +172,7 @@ static ERL_NIF_TERM elmdb_init(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv
 
     lmdb_env_t *handle = enif_alloc_resource(lmdbEnvResType, sizeof(*handle));
     if (handle == NULL) FAIL_ERR(ENOMEM, err1);
-    mdb_txn_commit(rotxn);
+    mdb_txn_abort(rotxn);
 
     handle->env = ctx;
     handle->layers = layers;
@@ -201,6 +208,17 @@ static ERL_NIF_TERM elmdb_close(ErlNifEnv* env, int argc, const ERL_NIF_TERM arg
         return enif_raise_exception(env, enif_make_string(env, "closed lmdb", ERL_NIF_LATIN1));\
     }
 
+#define CHECKOUT_DBNAME(lterm, layer, label)                        \
+    do {                                                            \
+        ErlNifBinary layBin;                                        \
+        if (!enif_inspect_iolist_as_binary(env, lterm, &layBin)) {  \
+            err = enif_make_tuple2(env, ATOM_ERROR,                 \
+                enif_make_tuple2(env, ATOM_DBI_NOT_FOUND, lterm));  \
+            goto label;                                             \
+        }                                                           \
+        memcpy(layer, layBin.data, layBin.size);                    \
+    } while(0)
+
 static ERL_NIF_TERM elmdb_path(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
     __UNUSED(argc);
     lmdb_env_t *handle = NULL;
@@ -213,15 +231,12 @@ static ERL_NIF_TERM elmdb_path(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv
 
 static ERL_NIF_TERM elmdb_drop(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
     __UNUSED(argc);
+    ERL_NIF_TERM err;
     lmdb_env_t *handle = NULL;
     CHECKOUT_ARG_FOR_DB(handle);
     
-    ErlNifBinary layBin;
-    if (!enif_inspect_iolist_as_binary(env, argv[1], &layBin)) {
-        return enif_make_badarg(env);
-    }
     char dbname[SUBDB_NAME_SZ] = {0};
-    memcpy(dbname, layBin.data, layBin.size);
+    CHECKOUT_DBNAME(argv[1], dbname, err0);
 
     enif_rwlock_rlock(handle->layers_rwlock);
     bool exist = (kh_get(layer,handle->layers, dbname) != kh_end(handle->layers));
@@ -233,10 +248,9 @@ static ERL_NIF_TERM elmdb_drop(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv
     }
 
     int ret;
-    ERL_NIF_TERM err;
 
     MDB_txn *txn = NULL;
-    CHECK(mdb_txn_begin(handle->env, NULL, 0, &txn), err2);
+    CHECK(mdb_txn_begin(handle->env, NULL, 0, &txn), err0);
     MDB_dbi dbi;
     CHECK(mdb_dbi_open(txn, dbname, 0, &dbi), err1);
     // 1 to delete DB from the environment and close the DB handle
@@ -252,21 +266,18 @@ static ERL_NIF_TERM elmdb_drop(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv
 
 err1:
     mdb_txn_abort(txn);
-err2:
+err0:
     return enif_raise_exception(env, err);
 }
 
 static ERL_NIF_TERM elmdb_count(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
     __UNUSED(argc);
+    ERL_NIF_TERM err;
     lmdb_env_t *handle = NULL;
     CHECKOUT_ARG_FOR_DB(handle);
     
-    ErlNifBinary layBin;
-    if (!enif_inspect_iolist_as_binary(env, argv[1], &layBin)) {
-        return enif_make_badarg(env);
-    }
     char dbname[SUBDB_NAME_SZ] = {0};
-    memcpy(dbname, layBin.data, layBin.size);
+    CHECKOUT_DBNAME(argv[1], dbname, err0);
 
     enif_rwlock_rlock(handle->layers_rwlock);
     bool exist = (kh_get(layer,handle->layers, dbname) != kh_end(handle->layers));
@@ -277,21 +288,20 @@ static ERL_NIF_TERM elmdb_count(ErlNifEnv* env, int argc, const ERL_NIF_TERM arg
     }
 
     int ret;
-    ERL_NIF_TERM err;
 
     MDB_txn *txn = NULL;
-    CHECK(mdb_txn_begin(handle->env, NULL, MDB_RDONLY, &txn), err2);
+    CHECK(mdb_txn_begin(handle->env, NULL, MDB_RDONLY, &txn), err0);
     MDB_dbi dbi;
     CHECK(mdb_dbi_open(txn, dbname, 0, &dbi), err1);
     MDB_stat mst;
     CHECK(mdb_stat(txn, dbi, &mst), err1);
-    mdb_txn_abort(txn);
+    mdb_txn_commit(txn);
 
     return enif_make_int(env, mst.ms_entries);
 
 err1:
     mdb_txn_abort(txn);
-err2:
+err0:
     return enif_raise_exception(env, err);
 }
 
@@ -304,50 +314,57 @@ typedef struct my_key_s {
     };
 } my_key_t;
 
-#define CHECKOUT_MYKEY(kt, mykey, label)                                \
-    switch (enif_term_type(env, kt)) {                                  \
-        case ERL_NIF_TERM_TYPE_BITSTRING:                               \
-            if (!enif_inspect_binary(env, kt, &mykey.keyBin)) {         \
-                break;                                                  \
-            }                                                           \
-            mykey.key.mv_size = mykey.keyBin.size;                      \
-            mykey.key.mv_data = mykey.keyBin.data;                      \
-            mykey.type = 0;                                             \
-            break;                                                      \
-        case ERL_NIF_TERM_TYPE_INTEGER:                                 \
-            if (!enif_get_int64(env, kt, (ErlNifSInt64*)&mykey.keyInt)) {\
-                break;                                                  \
-            }                                                           \
-            mykey.key.mv_size = sizeof(ErlNifSInt64);                   \
-            mykey.key.mv_data = &mykey.keyInt;                          \
-            mykey.type = MDB_INTEGERKEY;                                \
-            break;                                                      \
-        default:                                                        \
-            ERR_LOG("unknow key type, only support int & string");      \
-            err = enif_make_badarg(env);                                \
-            goto label;                                                 \
+#define CHECKOUT_MYKEY(kterm, mykey, label)                                     \
+    switch(enif_term_type(env, kterm)) {                                        \
+        case ERL_NIF_TERM_TYPE_BITSTRING:                                       \
+            if (!enif_inspect_binary(env, kterm, &mykey.keyBin)) {              \
+                err = enif_make_tuple2(env, ATOM_ERROR,                         \
+                        enif_make_tuple2(env, ATOM_WRONGKEY, kterm));           \
+                goto label;                                                     \
+            }                                                                   \
+            mykey.key.mv_size = mykey.keyBin.size;                              \
+            mykey.key.mv_data = mykey.keyBin.data;                              \
+            mykey.type = 0;                                                     \
+            break;                                                              \
+        case ERL_NIF_TERM_TYPE_INTEGER:                                         \
+            if (!enif_get_int64(env, kterm, (ErlNifSInt64*)&mykey.keyInt)) {    \
+                err = enif_make_tuple2(env, ATOM_ERROR,                         \
+                        enif_make_tuple2(env, ATOM_WRONGKEY, kterm));           \
+                goto label;                                                     \
+            }                                                                   \
+            mykey.key.mv_size = sizeof(ErlNifSInt64);                           \
+            mykey.key.mv_data = &mykey.keyInt;                                  \
+            mykey.type = MDB_INTEGERKEY;                                        \
+            break;                                                              \
+        default:                                                                \
+            ERR_LOG("unknow key type, only support int & string, %T", kterm);   \
+            err = enif_make_badarg(env);                                        \
+            goto label;                                                         \
     }
 
-
+#define CHECKOUT_LAYER_KEY_TUPLE(laykey, label)                         \
+    do {                                                                \
+    int arity = 0;                                                      \
+    if (!enif_get_tuple(env, argv[1], &arity, &laykey) || arity != 2) { \
+        err = enif_make_badarg(env);                                    \
+        goto label;                                                     \
+    }                                                                   \
+    } while (0)
+    
 static ERL_NIF_TERM elmdb_put(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
     __UNUSED(argc);
+    ERL_NIF_TERM err;
     lmdb_env_t *handle = NULL;
     CHECKOUT_ARG_FOR_DB(handle);
 
     const ERL_NIF_TERM* laykey = NULL;
-    int arity = 0;
-    if (!enif_get_tuple(env, argv[1], &arity, &laykey)) {
-        return enif_make_badarg(env);
-    }
-    ErlNifBinary layBin;
-    if (arity != 2 ||
-        !enif_inspect_iolist_as_binary(env, laykey[0], &layBin)) {
-        return enif_make_badarg(env);
-    }
+    CHECKOUT_LAYER_KEY_TUPLE(laykey, err0);
 
-    ERL_NIF_TERM err;
-    my_key_t mykey = { };
-    CHECKOUT_MYKEY(laykey[1], mykey, err3);
+    char dbname[SUBDB_NAME_SZ] = {0};
+    CHECKOUT_DBNAME(laykey[0], dbname, err0);
+
+    my_key_t mykey = {0};
+    CHECKOUT_MYKEY(laykey[1], mykey, err0);
 
     ErlNifBinary valTerm;
     if (!enif_inspect_binary(env, argv[2], &valTerm)) {
@@ -358,9 +375,6 @@ static ERL_NIF_TERM elmdb_put(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
 
     MDB_txn *txn = NULL;
     CHECK(mdb_txn_begin(handle->env, NULL, 0, &txn), err2);
-
-    char dbname[SUBDB_NAME_SZ] = {0};
-    memcpy(dbname, layBin.data, layBin.size);
 
     unsigned int dbiFlags = 0;
     enif_rwlock_rwlock(handle->layers_rwlock);
@@ -399,7 +413,7 @@ static ERL_NIF_TERM elmdb_put(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
     val.mv_data = valTerm.data;
 
     CHECK(mdb_put(txn, dbi, &mykey.key, &val, 0), err2);
-    CHECK(mdb_txn_commit(txn), err3);
+    CHECK(mdb_txn_commit(txn), err0);
     // After a successful commit dbi will reside in the shared environment,
     // and may be used by other transactions.
     return ATOM_OK;
@@ -410,32 +424,25 @@ err2:
     mdb_txn_abort(txn);
     // If the transaction is aborted, dbi will be closed automatically.
     
-err3:
+err0:
     return err;
 }
 
 static ERL_NIF_TERM elmdb_get(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
     __UNUSED(argc);
+    ERL_NIF_TERM err;
     lmdb_env_t *handle = NULL;
     CHECKOUT_ARG_FOR_DB(handle);
 
     const ERL_NIF_TERM* laykey = NULL;
-    int arity = 0;
-    if (!enif_get_tuple(env, argv[1], &arity, &laykey)) {
-        return enif_make_badarg(env);
-    }
-    ErlNifBinary layBin;
-    if (arity != 2 ||
-        !enif_inspect_iolist_as_binary(env, laykey[0], &layBin)) {
-        return enif_make_badarg(env);
-    }
-
-    ERL_NIF_TERM err;
-    my_key_t mykey = { };
-    CHECKOUT_MYKEY(laykey[1], mykey, err2);
+    CHECKOUT_LAYER_KEY_TUPLE(laykey, err0);
 
     char dbname[SUBDB_NAME_SZ] = {0};
-    memcpy(dbname, layBin.data, layBin.size);
+    CHECKOUT_DBNAME(laykey[0], dbname, err0);
+
+    my_key_t mykey = {0};
+    CHECKOUT_MYKEY(laykey[1], mykey, err0);
+
     enif_rwlock_rlock(handle->layers_rwlock);
     bool exist = (kh_get(layer,handle->layers, dbname) != kh_end(handle->layers));
     enif_rwlock_runlock(handle->layers_rwlock);
@@ -448,25 +455,22 @@ static ERL_NIF_TERM elmdb_get(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
     int ret;
 
     MDB_txn *txn = NULL;
-    CHECK(mdb_txn_begin(handle->env, NULL, MDB_RDONLY, &txn), err2);
+    CHECK(mdb_txn_begin(handle->env, NULL, MDB_RDONLY, &txn), err0);
     MDB_dbi dbi;
     CHECK(mdb_dbi_open(txn, dbname, 0, &dbi), err1);
     
     MDB_val val;
-    if (MDB_NOTFOUND == mdb_get(txn, dbi, &mykey.key, &val)) {
-        err = enif_make_tuple2(env, ATOM_ERROR, ATOM_NOTFOUND);
-        goto err1;
-    }
-    mdb_txn_abort(txn);
+    CHECK(mdb_get(txn, dbi, &mykey.key, &val), err1);
 
     ERL_NIF_TERM res;
     unsigned char* bin = enif_make_new_binary(env, val.mv_size, &res);
     memcpy(bin, val.mv_data, val.mv_size);
+    mdb_txn_abort(txn);
     return res;
 
 err1:
     mdb_txn_abort(txn);
-err2:
+err0:
     return err;
 }
 
@@ -547,27 +551,19 @@ static ERL_NIF_TERM elmdb_max(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
 
 static ERL_NIF_TERM elmdb_del(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
     __UNUSED(argc);
+    ERL_NIF_TERM err;
     lmdb_env_t *handle = NULL;
     CHECKOUT_ARG_FOR_DB(handle);
 
     const ERL_NIF_TERM* laykey = NULL;
-    int arity = 0;
-    if (!enif_get_tuple(env, argv[1], &arity, &laykey)) {
-        return enif_make_badarg(env);
-    }
-    ErlNifBinary layBin;
-    if (arity != 2 ||
-        !enif_inspect_iolist_as_binary(env, laykey[0], &layBin)) {
-        return enif_make_badarg(env);
-    }
-
-    ERL_NIF_TERM err;
-
-    my_key_t mykey = { };
-    CHECKOUT_MYKEY(laykey[1], mykey, err2);
+    CHECKOUT_LAYER_KEY_TUPLE(laykey, err0);
 
     char dbname[SUBDB_NAME_SZ] = {0};
-    memcpy(dbname, layBin.data, layBin.size);
+    CHECKOUT_DBNAME(laykey[0], dbname, err0);
+
+    my_key_t mykey = {0};
+    CHECKOUT_MYKEY(laykey[1], mykey, err0);
+
     enif_rwlock_rlock(handle->layers_rwlock);
     bool exist = (kh_get(layer,handle->layers, dbname) != kh_end(handle->layers));
     enif_rwlock_runlock(handle->layers_rwlock);
@@ -581,7 +577,7 @@ static ERL_NIF_TERM elmdb_del(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
     int ret;
 
     MDB_txn *txn = NULL;
-    CHECK(mdb_txn_begin(handle->env, NULL, 0, &txn), err2);
+    CHECK(mdb_txn_begin(handle->env, NULL, 0, &txn), err0);
     MDB_dbi dbi;
     CHECK(mdb_dbi_open(txn, dbname, 0, &dbi), err1);
     DBG("open dbi: %d", dbi);
@@ -594,7 +590,7 @@ static ERL_NIF_TERM elmdb_del(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
 
 err1:
     mdb_txn_abort(txn);
-err2:
+err0:
     return err;
 }
 
@@ -616,15 +612,12 @@ static ERL_NIF_TERM elmdb_ls(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]
 }
 
 static ERL_NIF_TERM elmdb_range(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
+    ERL_NIF_TERM err;
     lmdb_env_t *handle = NULL;
     CHECKOUT_ARG_FOR_DB(handle);
 
-    ErlNifBinary layBin;
-    if (!enif_inspect_iolist_as_binary(env, argv[1], &layBin)) {
-        return enif_make_badarg(env);
-    }
     char dbname[SUBDB_NAME_SZ] = {0};
-    memcpy(dbname, layBin.data, layBin.size);
+    CHECKOUT_DBNAME(argv[1], dbname, err0);
 
     enif_rwlock_rlock(handle->layers_rwlock);
     bool exist = (kh_get(layer,handle->layers, dbname) != kh_end(handle->layers));
@@ -636,7 +629,6 @@ static ERL_NIF_TERM elmdb_range(ErlNifEnv* env, int argc, const ERL_NIF_TERM arg
     }
 
     int ret;
-    ERL_NIF_TERM err;
 
     MDB_txn *txn = NULL;
     CHECK(mdb_txn_begin(handle->env, NULL, MDB_RDONLY, &txn), err2);
@@ -686,15 +678,15 @@ static ERL_NIF_TERM elmdb_range(ErlNifEnv* env, int argc, const ERL_NIF_TERM arg
         op = MDB_NEXT;
     }
     mdb_cursor_close(cur);
-    mdb_dbi_close(handle->env, dbi);
+    //mdb_dbi_close(handle->env, dbi);
     mdb_txn_abort(txn);
     return map;
 
 err1:
-    mdb_dbi_close(handle->env, dbi);
+    //mdb_dbi_close(handle->env, dbi);
 err2:
     mdb_txn_abort(txn);
-err3:
+err0:
     return err;
 }
 
@@ -754,12 +746,12 @@ static ERL_NIF_TERM elmdb_to_map(ErlNifEnv* env, int argc, const ERL_NIF_TERM ar
         op = MDB_NEXT;
     }
     mdb_cursor_close(cur);
-    mdb_dbi_close(handle->env, dbi);
+    //mdb_dbi_close(handle->env, dbi);
     mdb_txn_abort(txn);
     return map;
 
 err1:
-    mdb_dbi_close(handle->env, dbi);
+    //mdb_dbi_close(handle->env, dbi);
 err2:
     mdb_txn_abort(txn);
     return enif_raise_exception(env, err);
@@ -868,7 +860,40 @@ static ERL_NIF_TERM hello(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
     __UNUSED(argc);
     __UNUSED(argv);
     __UNUSED(env);
+    ERL_NIF_TERM err;
+    lmdb_env_t *handle = NULL;
+    CHECKOUT_ARG_FOR_DB(handle);
+    unsigned readers = 0;
+    mdb_env_get_maxreaders(handle->env, &readers);
+    DBG("maxreaders: %u", readers);
+
+    int ret;
+    MDB_txn* txn=NULL;
+    CHECK(mdb_txn_begin(handle->env, NULL, MDB_RDONLY, &txn), err0);
+    MDB_dbi dbi;
+    CHECK(mdb_dbi_open(txn, NULL, 0, &dbi), err0);
+    MDB_cursor *cursor;
+    CHECK(mdb_cursor_open(txn, dbi, &cursor), err2);
+    MDB_val key;
+    MDB_val val;
+    while (mdb_cursor_get(cursor, &key, &val, MDB_NEXT_NODUP) == 0) {
+        char *dbname = calloc(key.mv_size + 1, 1);  
+        memcpy(dbname, key.mv_data, key.mv_size);
+        char *dbval = calloc(val.mv_size + 1, 1);
+        memcpy(dbval, val.mv_data, val.mv_size);
+//        enif_fprintf(stdout, "dbname: %s, val.sz: %u, val: %s\r\n", DKEY(&key), val.mv_size, dbval);
+//        for (size_t i=0; i<val.mv_size; ++i) 
+ //           enif_fprintf(stdout, "%d: %u\r\n", i, dbval[i]);
+    }
+    mdb_cursor_close(cursor);
+    //mdb_dbi_close(handle->env, dbi);
+    mdb_txn_abort(txn);
     return ATOM_OK;
+err2:
+    mdb_cursor_close(cursor);
+err0:
+    mdb_txn_abort(txn);
+    return ATOM_ERROR;
 }
 
 static int loads = 0;
@@ -941,12 +966,12 @@ static ErlNifFunc nif_funcs[] = {
     {"close",       1, elmdb_close,     ERL_NIF_DIRTY_JOB_IO_BOUND},
     {"drop",        2, elmdb_drop,      ERL_NIF_DIRTY_JOB_IO_BOUND},
     {"db_path",     1, elmdb_path,      0},
-    {"count",       2, elmdb_count,     0},
-    {"put",         3, elmdb_put,       0},
-    {"get",         2, elmdb_get,       0},
-    {"del",         2, elmdb_del,       0},
-    {"minkey",      2, elmdb_min,       0},
-    {"maxkey",      2, elmdb_max,       0},
+    {"count",       2, elmdb_count,     ERL_NIF_DIRTY_JOB_IO_BOUND},
+    {"put",         3, elmdb_put,       ERL_NIF_DIRTY_JOB_IO_BOUND},
+    {"get",         2, elmdb_get,       ERL_NIF_DIRTY_JOB_IO_BOUND},
+    {"del",         2, elmdb_del,       ERL_NIF_DIRTY_JOB_IO_BOUND},
+    {"minkey",      2, elmdb_min,       ERL_NIF_DIRTY_JOB_IO_BOUND},
+    {"maxkey",      2, elmdb_max,       ERL_NIF_DIRTY_JOB_IO_BOUND},
     {"ls",          1, elmdb_ls,        0},
     {"range",       3, elmdb_range,     ERL_NIF_DIRTY_JOB_IO_BOUND},
     {"range",       4, elmdb_range,     ERL_NIF_DIRTY_JOB_IO_BOUND},
@@ -954,7 +979,7 @@ static ErlNifFunc nif_funcs[] = {
     {"iter",        2, elmdb_iter,      ERL_NIF_DIRTY_JOB_IO_BOUND},
     {"close_iter",  1, elmdb_close_iter,ERL_NIF_DIRTY_JOB_IO_BOUND},
     {"next",        1, elmdb_next,      ERL_NIF_DIRTY_JOB_IO_BOUND},
-    {"hello",       1, hello,           0}
+    {"hello",       1, hello,           ERL_NIF_DIRTY_JOB_IO_BOUND}
 };
 
 ERL_NIF_INIT(elmdb, nif_funcs, load, NULL, upgrade, unload)
