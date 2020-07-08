@@ -130,7 +130,7 @@ postcondition(S, {call,elmdb,del,[D,{L,Key}]}, Result) ->
             {error, {notfound_layer, L}} =:= Result;
         LM ->
             case maps:find(Key, LM) of
-                error -> ok =:= Result;
+                error -> {error,notfound} =:= Result;
                 {ok,Value} -> ok =:= Result
             end
     end;
