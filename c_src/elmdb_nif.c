@@ -79,7 +79,7 @@ static void lmdb_close(lmdb_env_t* lmdb) {
 
 static void lmdb_dtor(ErlNifEnv* env, void* obj) {
     __UNUSED(env);
-    INFO_LOG("env-dtor is destroying lmdb.env -> %p", obj);
+    INFO("env-dtor is destroying lmdb.env -> %p", obj);
     lmdb_env_t *lmdb = (lmdb_env_t*)obj;
     lmdb_close(lmdb);
 }
@@ -106,7 +106,7 @@ static void lmdb_cursor_close(lmdb_cursor_t* cursor) {
 }
 static void lmdb_cursor_dtor(ErlNifEnv* env, void* obj) {
     __UNUSED(env);
-    INFO_LOG("cursor-dtor is destroying, with lmdb.env: %p", obj);
+    INFO("cursor-dtor is destroying, with lmdb.env: %p", obj);
     lmdb_cursor_t *cursor = (lmdb_cursor_t*)obj;
     lmdb_cursor_close(cursor);
 }
@@ -161,7 +161,6 @@ static ERL_NIF_TERM elmdb_init(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv
             unsigned int dbiflags = 0;
             CHECK(mdb_dbi_flags(rotxn, subdb, &dbiflags), err1);
             DBG("subdb -> name=%s, dbi=%d, dbiflags=%u", dbname, subdb, dbiflags);
-            enif_fprintf(stdout,"subdb -> name=%s, dbi=%d, dbiflags=%u\r\n", dbname, subdb, dbiflags);
             kh_value(layers, k) = subdb;
             //mdb_dbi_close(ctx, subdb);
         }
@@ -173,6 +172,7 @@ static ERL_NIF_TERM elmdb_init(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv
 
     lmdb_env_t *handle = enif_alloc_resource(lmdbEnvResType, sizeof(*handle));
     if (handle == NULL) FAIL_ERR(ENOMEM, err1);
+    // why commit? If the transaction is aborted the dbi will be closed automatically
     mdb_txn_commit(rotxn);
 
     handle->env = ctx;
@@ -215,7 +215,7 @@ static ERL_NIF_TERM elmdb_close(ErlNifEnv* env, int argc, const ERL_NIF_TERM arg
         ErlNifBinary layBin;                                        \
         if (!enif_inspect_iolist_as_binary(env, lterm, &layBin)) {  \
             err = enif_make_tuple2(env, ATOM_ERROR,                 \
-                enif_make_tuple2(env, ATOM_DBI_NOT_FOUND, lterm));  \
+                enif_make_tuple2(env, ATOM_WRONG_TYPE, lterm));  \
             goto label;                                             \
         }                                                           \
         memcpy(layer, layBin.data, layBin.size);                    \
@@ -226,9 +226,13 @@ static ERL_NIF_TERM elmdb_path(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv
     lmdb_env_t *handle = NULL;
     CHECKOUT_ARG_FOR_DB(handle);
 
+    int ret;
+    ERL_NIF_TERM err;
     const char* path;
-    mdb_env_get_path(handle->env, &path);
+    CHECK(mdb_env_get_path(handle->env, &path), err0);
     return enif_make_string(env, path, ERL_NIF_LATIN1);
+err0:
+    return err;
 }
 
 static ERL_NIF_TERM elmdb_drop(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
@@ -297,8 +301,7 @@ static ERL_NIF_TERM elmdb_count(ErlNifEnv* env, int argc, const ERL_NIF_TERM arg
 
     MDB_txn *txn = NULL;
     CHECK(mdb_txn_begin(handle->env, NULL, MDB_RDONLY, &txn), err0);
-    //MDB_dbi dbi;
-    //CHECK(mdb_dbi_open(txn, dbname, 0, &dbi), err1);
+
     MDB_stat mst;
     CHECK(mdb_stat(txn, dbi, &mst), err1);
     mdb_txn_abort(txn);
@@ -325,7 +328,7 @@ typedef struct my_key_s {
         case ERL_NIF_TERM_TYPE_BITSTRING:                                       \
             if (!enif_inspect_binary(env, kterm, &mykey.keyBin)) {              \
                 err = enif_make_tuple2(env, ATOM_ERROR,                         \
-                        enif_make_tuple2(env, ATOM_WRONGKEY, kterm));           \
+                        enif_make_tuple2(env, ATOM_WRONG_TYPE, kterm));           \
                 goto label;                                                     \
             }                                                                   \
             mykey.key.mv_size = mykey.keyBin.size;                              \
@@ -335,7 +338,7 @@ typedef struct my_key_s {
         case ERL_NIF_TERM_TYPE_INTEGER:                                         \
             if (!enif_get_int64(env, kterm, (ErlNifSInt64*)&mykey.keyInt)) {    \
                 err = enif_make_tuple2(env, ATOM_ERROR,                         \
-                        enif_make_tuple2(env, ATOM_WRONGKEY, kterm));           \
+                        enif_make_tuple2(env, ATOM_WRONG_TYPE, kterm));           \
                 goto label;                                                     \
             }                                                                   \
             mykey.key.mv_size = sizeof(ErlNifSInt64);                           \
@@ -598,6 +601,7 @@ static ERL_NIF_TERM elmdb_ls(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]
     ERL_NIF_TERM list = enif_make_list(env, 0);
     const char* dbname = NULL;
     MDB_dbi dbi;
+    __UNUSED(dbi);
     enif_rwlock_rlock(handle->layers_rwlock);
     kh_foreach(handle->layers, dbname, dbi, {
         ERL_NIF_TERM hd = enif_make_string(env, dbname, ERL_NIF_LATIN1);    
@@ -853,7 +857,9 @@ static ERL_NIF_TERM hello(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
     CHECKOUT_ARG_FOR_DB(handle);
     unsigned readers = 0;
     mdb_env_get_maxreaders(handle->env, &readers);
+    INFO("Maxreaders: %u", readers);
     DBG("maxreaders: %u", readers);
+    WARN("maxreaders: %u", readers);
 
     int ret;
     MDB_txn* txn=NULL;
@@ -900,7 +906,7 @@ static int load(ErlNifEnv* env, void** priv_data, ERL_NIF_TERM load_info)
     ATOM_NOT_FOUND = enif_make_atom(env, "not_found");
     ATOM_DBI_NOT_FOUND = enif_make_atom(env, "dbi_not_found");
     ATOM_EXISTS = enif_make_atom(env, "exists");
-
+    ATOM_WRONG_TYPE = enif_make_atom(env, "wrong_type");
     ATOM_KEYEXIST = enif_make_atom(env, "key_exist");
     ATOM_NOTFOUND = enif_make_atom(env, "notfound");
     ATOM_CORRUPTED = enif_make_atom(env, "corrupted");

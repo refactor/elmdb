@@ -55,18 +55,18 @@ long thrd_id() {
 #endif
 
 
-#ifdef NODEBUG
+#if defined(NODEBUG)
 
 #define DBG(fmt, ...)
-#define WARN_LOG(fmt, ...)
+#define INFO(fmt, ...)
 
 #else
 
-#define DBG(fmt, ...) enif_fprintf(stdout, GREY("%s-%llx [%34s#%-5d@(tid:%llx)]") " " fmt "\r\n",enif_thread_name(enif_thread_self()), enif_thread_self(),__func__,__LINE__,thrd_id(), ##__VA_ARGS__)
-#define WARN(fmt, ...) enif_fprintf(stdout, B_MAGENTA("[%34s#%-5d@(tid:%llx)]") " " fmt "\r\n", __func__,__LINE__,thrd_id(), ##__VA_ARGS__)
-#define WARN_LOG(fmt, ...) enif_fprintf(stderr, B_YELLOW("[@(tid:%llx)] " fmt) "\r\n", thrd_id(), ##__VA_ARGS__)
+#define DBG(fmt, ...) enif_fprintf(stdout, GREY("%s-%llx [%32s#%-5d@(tid:%llx)]") " " fmt "\r\n",enif_thread_name(enif_thread_self()), enif_thread_self(),__func__,__LINE__,thrd_id(), ##__VA_ARGS__)
+#define INFO(fmt, ...) enif_fprintf(stderr, B_WHITE("[%32s#%-5d@(tid:%llx)] " fmt) "\r\n", __func__,__LINE__,thrd_id(), ##__VA_ARGS__)
 
 #endif
 
-#define INFO_LOG(fmt, ...) enif_fprintf(stderr, "[@(tid:%llx)] " fmt "\r\n", thrd_id(), ##__VA_ARGS__)
+#define WARN(fmt, ...) enif_fprintf(stdout, B_MAGENTA("%s-%llx [%32s#%-5d@(tid:%llx)]") " " fmt "\r\n", enif_thread_name(enif_thread_self()),enif_thread_self(), __func__,__LINE__,thrd_id(), ##__VA_ARGS__)
+#define WARN_LOG(fmt, ...) enif_fprintf(stderr, B_YELLOW("[@(tid:%llx)] " fmt) "\r\n", thrd_id(), ##__VA_ARGS__)
 #define ERR_LOG(fmt, ...) enif_fprintf(stderr, B_RED("[@(tid:%llx)] " fmt) "\r\n", thrd_id(), ##__VA_ARGS__)
